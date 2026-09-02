@@ -1,0 +1,305 @@
+% Exact LaTeX recreation of the supplied Phase-1.pdf
+% Compile with pdfLaTeX. Place member pictures (member1.png, member2.png, member3.png) in the same folder.
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[a4paper,left=2.0cm,right=2.0cm,top=1.55cm,bottom=1.55cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{ragged2e}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{tikz}
+\usepackage{float}
+\usetikzlibrary{shapes.geometric,arrows.meta,positioning}
+\usepackage{setspace}
+
+% -------------------------------------------------
+% COLOURS
+% -------------------------------------------------
+\definecolor{TitleBlue}{RGB}{61,103,154}
+
+% -------------------------------------------------
+% GENERAL SETTINGS
+% -------------------------------------------------
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\renewcommand{\arraystretch}{1.0}
+
+\newcommand{\blueheading}[1]{%
+    {\sffamily\color{TitleBlue}\fontsize{15}{18}\selectfont #1}%
+}
+
+\newcommand{\bluebigheading}[1]{%
+    {\sffamily\bfseries\color{TitleBlue}\fontsize{16}{19}\selectfont #1}%
+}
+
+\newcommand{\instruction}[1]{%
+    {\itshape\fontsize{10.5}{12.5}\selectfont #1}%
+}
+
+% Modified answerbox to auto-size dynamically and prevent overflow
+\newcommand{\answerbox}[2][3.0cm]{%
+    \vspace{2pt}
+    \noindent
+    \fbox{%
+        \begin{minipage}[t]{\dimexpr\textwidth-2\fboxsep-2\fboxrule\relax}
+            \vspace{2mm}
+            \normalfont\fontsize{10.5}{13}\selectfont #2
+            \vspace{2mm}
+        \end{minipage}
+    }
+}
+
+% -------------------------------------------------
+% HEADER / FOOTER
+% -------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\fancyhead[L]{%
+    \sffamily\bfseries\itshape\fontsize{10.5}{12}\selectfont
+    BTECH CSE DSCPP-III-2026-T278
+}
+\fancyhead[R]{%
+    \sffamily\bfseries\fontsize{10.5}{12}\selectfont
+    PROJECT PROPOSAL
+}
+\fancyfoot[R]{%
+    \itshape\fontsize{10}{12}\selectfont
+    Page \thepage
+}
+\setlength{\headheight}{14pt}
+\setlength{\headsep}{23pt}
+\setlength{\footskip}{24pt}
+
+% -------------------------------------------------
+% PAGE 1
+% -------------------------------------------------
+\begin{document}
+
+\vspace*{4mm}
+
+\bluebigheading{PROJECT AND TEAM INFORMATION}
+
+\vspace{8mm}
+
+\begin{minipage}{\textwidth}
+\blueheading{Project Title}
+
+\vspace{1mm}
+
+\answerbox[1.0cm]{RouteLens: Multiple Routes Visualization and Optimization system}
+\end{minipage}
+
+\vspace{8mm}
+
+\blueheading{Student / Team Information}
+
+\vspace{2mm}
+
+% Team information table
+\noindent
+\begin{tabularx}{\textwidth}{|>{\RaggedRight\arraybackslash}p{0.69\textwidth}|>{\RaggedRight\arraybackslash}X|}
+\hline
+\begin{minipage}[t]{\linewidth}
+\vspace{1.5mm}
+\textit{Team Name:}\\[-1mm]
+\textit{Team \#}
+\vspace{1.5mm}
+\end{minipage}
+&
+\begin{minipage}[t]{\linewidth}
+\vspace{1.5mm}
+\textit{Carpe Diem}
+\\
+
+\textit{DSCPP-III-2026-T278}
+\end{minipage}
+\\
+\hline
+\begin{minipage}[t][3.25cm][t]{\linewidth}
+\vspace{1.5mm}
+\textbf{Team member 1 (Team Lead)}\\[-1mm]
+\textit{}
+\vspace{2.0cm}
+\end{minipage}
+&
+\begin{minipage}[t][3.25cm][t]{\linewidth}
+\vspace{1.5mm}
+\textit{Upreti Gunjita  2510382973}\\
+\textit{2510382973@geu.ac.in}
+
+\vspace{2mm}
+\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{}
+\end{minipage}
+\\
+\hline
+\begin{minipage}[t][3.25cm][t]{\linewidth}
+\vspace{1.5mm}
+\textbf{Team member 2}\\[-1mm]
+\textit{}
+\vspace{2.0cm}
+\end{minipage}
+&
+\begin{minipage}[t][3.25cm][t]{\linewidth}
+\vspace{1.5mm}
+\textit{Rawat Sneha , 2510012141}\\
+\textit{2510012141@geu.ac.in}
+
+\vspace{2mm}
+\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{}
+\end{minipage}
+\\
+\hline
+\begin{minipage}[t][3.25cm][t]{\linewidth}
+\vspace{1.5mm}
+\textbf{Team member 3}\\[-1mm]
+\textit{}
+\vspace{2.0cm}
+\end{minipage}
+&
+\begin{minipage}[t][3.25cm][t]{\linewidth}
+\vspace{1.5mm}
+\textit{Rawat Aayush   2510370528}\\
+\textit{2510370528@geu.ac.in}
+
+\vspace{2mm}
+\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{}
+\end{minipage}
+\\
+\hline
+\end{tabularx}
+
+\newpage
+
+% -------------------------------------------------
+% PAGE 2
+% -------------------------------------------------
+
+\bluebigheading{PROPOSAL DESCRIPTION (10 pts)}
+
+\vspace{8mm}
+
+\noindent\begin{minipage}{\textwidth}
+\blueheading{Motivation (1 pt)}
+
+\vspace{1mm}
+
+\answerbox[8 cm]{Traffic gridlock is a problem in cities that are growing fast especially during busy times when there are a lot of cars on the road. This causes trips, crowded places where roads meet not using other roads well and problems from accidents, blocked roads or sudden changes in traffic.
+The Traffic Route Tracker is meant to help people see ways to get from one place to another. Of looking at each route by itself users can see many possible routes on the same map at the same time. Each route will have a color. This makes it easier to compare routes in a better way.Every route shown will have a box with details like how long the trip will take, how far it is, how busy the traffic is and how many traffic lights there are. The best route will stand out. Other options will still be there so people can see them side by side. This helps people know what each route is good for and what it might not be good for before they decide.The system will think of the roads as a graph with places where roads meet as points and roads as lines between them. The lines will have weights based on things like how it takes to drive and how traffic is moving. The project will show how to use Data Structures and Algorithms like graphs, queues, priority queues, linked lists and shortest-path methods. With a tool the Traffic Route Tracker will show how these ideas help solve real problems, with traffic and planning the best way to get somewhere.}
+\end{minipage}
+
+\vspace{8mm}
+
+\noindent\begin{minipage}{\textwidth}
+\blueheading{State of the Art / Current solution (1 pt)}
+
+\vspace{1mm}
+
+\answerbox[6cm]{Modern navigation applications such as Google Maps and Waze give route recommendations by using maps GPS data, traffic information and estimated travel times. They show routes and details such as distance, travel time and traffic conditions. However users normally must explore each route separately to see information, which makes it less convenient to compare many routes.The proposed Traffic Route Tracker solves this limitation by using an visually interactive approach. After the user enters a starting point and a destination the Traffic Route Tracker finds feasible routes and shows them at the same time on one map with different colours. Each route has an information box that shows estimated travel time, distance, traffic level and the number of traffic signals. The Traffic Route Tracker highlights the route while the other routes stay visible for comparison.The Traffic Route Tracker will also simulate traffic with animated vehicles moving across the road network. Changes, in traffic density, accidents or road blockages will alter travel times dynamically. May change the recommended route. Thus the project gives a demonstration of graph-based route optimization, traffic simulation and traffic management.}
+\end{minipage}
+
+\vspace{8mm}
+
+\noindent\begin{minipage}{\textwidth}
+\blueheading{Project Goals and Milestones (2 pts)}
+
+\vspace{1mm}
+
+
+\answerbox[7.5cm]{1. Project Goals:
+
+The main goal of the Traffic Route Tracker is to create a route-planning system that uses Data Structures and Algorithms to find, compare and show different routes between a starting point and an ending point. The roads will be shown as a graph with intersections as points and roads as connections. The system will keep track of distance time it takes to travel traffic conditions and traffic signals for each route. It will use Dijkstra’s algorithm along with graphs, priority queues, linked lists and queues to find routes. Multiple routes will be shown at the time using different colors with details like distance expected travel time, traffic situation and signals. The best route will be shown clearly. Changes in traffic will show how the best route can change over time.
+
+2. Project Milestones:
+
+The project will take eight weeks to finish. Weeks 1 and 2 will be about understanding what is needed designing the system creating a road map setting up the graph and planning the user interface. Week 3 will be for building the graphs, linked lists, queues and priority queues. Week 4 will be for adding BFS, DFS, Dijkstra’s algorithm calculating routes and including traffic-based weights. Week 5 will be for making and comparing routes. Week 6 will be for building the part of the system and showing the routes on a screen. Week 7 will be for adding traffic data and making changes happen in time. Week 8 will be, for testing making changes writing down how everything works and showing the result.}
+\end{minipage}
+
+\vspace{8mm}
+
+\noindent\begin{minipage}{\textwidth}
+\blueheading{Project Approach (3 pts)}
+
+\vspace{1mm}
+
+\answerbox[7cm]{The Traffic Route Tracker will use a graph based approach to show a road network and find good routes between a chosen start point and end point. I will write the core Data Structures and Algorithms in C or C++ while a graphics library like SFML will show the map.The road network will be shown as a weighted graph. In this graph places where roads meet are vertices and the roads themselves are edges. Edge weights will show an estimated travel time that depends on distance. On how busy the road is. An adjacency list will give a way to store this graph.
+
+
+
+When the user picks a source and a destination the Traffic Route Tracker will calculate possible routes. Dijkstra’s algorithm will find the route using the current road weights. The routes will be compared by looking at estimated travel time, distance, traffic level and how traffic lights they cross. The best route will be marked as the recommended route.Traffic will be simulated by giving each road a Low, Medium or High traffic condition. This will change the estimated travel time for that road. The graphical interface will show routes at once using different colours and will have info boxes that show details, about each route.
+
+
+The project will show how graphs, adjacency lists, priority queues or min‑heaps linked lists, queues, BFS and DFS work together. It will mix these DSA ideas with a live route optimisation visual that people can interact with.}
+\end{minipage}
+
+\vspace{8mm}
+
+\noindent\begin{minipage}{\textwidth}
+\blueheading{System Architecture (High Level Diagram)(2 pts)}
+
+\begin{figure}[H]
+    \centering
+    % Restricted height so it doesn't push sections unpredictably
+    \includegraphics[
+        width=0.75 \textwidth,
+        height=8.5cm,
+        keepaspectratio
+    ]{d8047db2-da43-48da-bb63-e89a677e62db.jpeg}
+    
+    \caption{System Architecture of the Dynamic Traffic-Aware Route Optimization System}
+    \label{fig:system_architecture}
+\end{figure}
+\end{minipage}
+
+\vspace{8mm}
+
+\noindent\begin{minipage}{\textwidth}
+\blueheading{Project Outcome / Deliverables (1 pts)}
+
+\vspace{1mm}
+
+\answerbox[5cm]{The final project will create a working Traffic Route Tracker that has a simple and easy to use interface. It will show a road network using a weighted graph and let people choose where they want to start and where they want to go. The system will. Show several possible routes at the same time each in different colors. Each route will show details, like how long it will take to travel how far it is, how busy the traffic is and how many traffic lights there are. The best choice will be shown as the route. Fake traffic situations will change how the routes are weighted and update the route when things change. Dijkstra’s algorithm will be used to find the fastest route and it will work with Data Structures like graphs, linked lists, queues and priority queues. The project will also have example situations that show how different traffic conditions affect which route is chosen. Overall the system will show how Data Structures, Algorithms, graph-based route planning and traffic simulation work together in a clear and easy to understand way.}
+\end{minipage}
+
+\vspace{8mm}
+
+\noindent\begin{minipage}{\textwidth}
+\blueheading{Assumptions}
+
+\vspace{1mm}
+
+
+\answerbox[5.9cm]{The Traffic Route Tracker will use a predefined road network instead of a full real map. Intersections or locations will be shown as graph vertices and roads will be shown as edges with predefined distance and base travel time. Traffic conditions will be simulated of taken from live data and will be labeled Low, Medium or High. These traffic conditions will change the estimated travel time of the roads.The system will show a few feasible routes at once to keep the interface clear. The recommended route will mainly be chosen by its estimated travel time and distance traffic level and the number of traffic signals will be shown for comparison. Traffic signals will come from map data.The system will not simulate vehicles or detailed real traffic flow. It will not need GPS, live traffic APIs or an internet connection, for its functions. Traffic changes will be added through predefined scenarios or user‑controlled inputs. The graphical interface will focus on showing routes and comparing them. The system will run on one computer using the chosen C/C++ environment and graphical framework.}
+\end{minipage}
+
+\vspace{8mm}
+
+\noindent\begin{minipage}{\textwidth}
+\blueheading{References}
+
+\vspace{1mm}
+
+\answerbox[4cm]{
+1.Cormen, T. H., Leiserson, C. E., Rivest, R. L. \& Stein, C. — Introduction to Algorithms, MIT Press — Graphs, Priority Queues and Dijkstra's Algorithm.
+\newline 
+2.Bjarne Stroustrup — The C++ Programming Language — Object-Oriented Programming, Classes, Inheritance and Polymorphism.
+\newline
+Brian W. Kernighan \& Dennis M. Ritchie — The C Programming Language — Structures, Pointers, Dynamic Memory and Data Structures.
+\newline
+3.E. W. Dijkstra — “A Note on Two Problems in Connexion with Graphs,” Numerische Mathematik, 1959.
+\newline
+4.SFML Documentation — Graphics, rendering, event handling and animation.
+GeeksforGeeks — Graph representations, BFS, DFS, Dijkstra's Algorithm, Priority Queues and Data Structures.
+\newline
+5.General literature on intelligent transportation systems and traffic-flow simulation.}
+\end{minipage}
+
+\end{document}
