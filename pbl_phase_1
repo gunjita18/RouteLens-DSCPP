@@ -1,6 +1,3 @@
-% Exact LaTeX recreation of the supplied Phase-1.pdf
-% Compile with pdfLaTeX. Place member pictures (member1.png, member2.png, member3.png) in the same folder.
-
 \documentclass[11pt,a4paper]{article}
 
 \usepackage[a4paper,left=2.0cm,right=2.0cm,top=1.55cm,bottom=1.55cm]{geometry}
@@ -15,7 +12,7 @@
 \usepackage{fancyhdr}
 \usepackage{tikz}
 \usepackage{float}
-\usetikzlibrary{shapes.geometric,arrows.meta,positioning}
+\usetikzlibrary{shapes.geometric,arrows.meta,positioning,calc}
 \usepackage{setspace}
 
 % -------------------------------------------------
@@ -42,7 +39,7 @@
     {\itshape\fontsize{10.5}{12.5}\selectfont #1}%
 }
 
-% Modified answerbox to auto-size dynamically and prevent overflow
+% Dynamic answerbox definition
 \newcommand{\answerbox}[2][3.0cm]{%
     \vspace{2pt}
     \noindent
@@ -80,7 +77,7 @@
 \setlength{\footskip}{24pt}
 
 % -------------------------------------------------
-% PAGE 1
+% DOCUMENT
 % -------------------------------------------------
 \begin{document}
 
@@ -119,7 +116,6 @@
 \vspace{1.5mm}
 \textit{Carpe Diem}
 \\
-
 \textit{DSCPP-III-2026-T278}
 \end{minipage}
 \\
@@ -133,11 +129,11 @@
 &
 \begin{minipage}[t][3.25cm][t]{\linewidth}
 \vspace{1.5mm}
-\textit{Upreti Gunjita  2510382973}\\
+\textit{Upreti Gunjita   2510382973}\\
 \textit{2510382973@geu.ac.in}
 
 \vspace{2mm}
-\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{}
+\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{gunjita.jpeg.png}
 \end{minipage}
 \\
 \hline
@@ -154,7 +150,7 @@
 \textit{2510012141@geu.ac.in}
 
 \vspace{2mm}
-\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{}
+\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{sneha.jpeg.png}
 \end{minipage}
 \\
 \hline
@@ -171,7 +167,7 @@
 \textit{2510370528@geu.ac.in}
 
 \vspace{2mm}
-\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{}
+\includegraphics[width=3.0cm,height=1.5cm,keepaspectratio]{aayush.jpeg.png}
 \end{minipage}
 \\
 \hline
@@ -213,7 +209,6 @@ The Traffic Route Tracker is meant to help people see ways to get from one place
 
 \vspace{1mm}
 
-
 \answerbox[7.5cm]{1. Project Goals:
 
 The main goal of the Traffic Route Tracker is to create a route-planning system that uses Data Structures and Algorithms to find, compare and show different routes between a starting point and an ending point. The roads will be shown as a graph with intersections as points and roads as connections. The system will keep track of distance time it takes to travel traffic conditions and traffic signals for each route. It will use Dijkstra’s algorithm along with graphs, priority queues, linked lists and queues to find routes. Multiple routes will be shown at the time using different colors with details like distance expected travel time, traffic situation and signals. The best route will be shown clearly. Changes in traffic will show how the best route can change over time.
@@ -232,10 +227,7 @@ The project will take eight weeks to finish. Weeks 1 and 2 will be about underst
 
 \answerbox[7cm]{The Traffic Route Tracker will use a graph based approach to show a road network and find good routes between a chosen start point and end point. I will write the core Data Structures and Algorithms in C or C++ while a graphics library like SFML will show the map.The road network will be shown as a weighted graph. In this graph places where roads meet are vertices and the roads themselves are edges. Edge weights will show an estimated travel time that depends on distance. On how busy the road is. An adjacency list will give a way to store this graph.
 
-
-
 When the user picks a source and a destination the Traffic Route Tracker will calculate possible routes. Dijkstra’s algorithm will find the route using the current road weights. The routes will be compared by looking at estimated travel time, distance, traffic level and how traffic lights they cross. The best route will be marked as the recommended route.Traffic will be simulated by giving each road a Low, Medium or High traffic condition. This will change the estimated travel time for that road. The graphical interface will show routes at once using different colours and will have info boxes that show details, about each route.
-
 
 The project will show how graphs, adjacency lists, priority queues or min‑heaps linked lists, queues, BFS and DFS work together. It will mix these DSA ideas with a live route optimisation visual that people can interact with.}
 \end{minipage}
@@ -245,16 +237,139 @@ The project will show how graphs, adjacency lists, priority queues or min‑heap
 \noindent\begin{minipage}{\textwidth}
 \blueheading{System Architecture (High Level Diagram)(2 pts)}
 
+\vspace{3mm}
+
 \begin{figure}[H]
     \centering
-    % Restricted height so it doesn't push sections unpredictably
-    \includegraphics[
-        width=0.75 \textwidth,
-        height=8.5cm,
-        keepaspectratio
-    ]{d8047db2-da43-48da-bb63-e89a677e62db.jpeg}
+    \begin{tikzpicture}[
+        node distance=1.6cm,
+        auto,
+        block/.style={
+            rectangle, 
+            draw=black!70, 
+            fill=white,
+            thick, 
+            text width=7.5cm, 
+            align=center, 
+            rounded corners=2pt,
+            font=\sffamily\small,
+            minimum height=1.1cm
+        },
+        subblock/.style={
+            rectangle, 
+            draw=black!60, 
+            fill=white,
+            text width=2.3cm, 
+            align=center, 
+            rounded corners=1pt,
+            font=\sffamily\scriptsize,
+            minimum height=1.1cm
+        },
+        manager/.style={
+            rectangle, 
+            draw=black!60, 
+            fill=white,
+            text width=2.4cm, 
+            align=center, 
+            rounded corners=1pt,
+            font=\sffamily\scriptsize,
+            minimum height=1.3cm
+        },
+        arrow/.style={
+            -{Stealth[scale=0.8]}, 
+            draw=black!70,
+            thick
+        },
+        doublearrow/.style={
+            {Stealth[scale=0.8]}-{Stealth[scale=0.8]}, 
+            draw=black!70,
+            thick
+        }
+    ]
+    % 1. UI Layer
+        \node [block] (ui) {
+            \textbf{User Interface (UI)} \\
+            \vspace{1mm}
+            {\raggedright \scriptsize 
+             $\bullet$ Select Start \& End Points \\ 
+             $\bullet$ Route Information \\ 
+             $\bullet$ View Multiple Paths \par}
+        };
+        
+
+        % 2. Controller Layer
+        \node [block, below of=ui, yshift=-0.2cm] (controller) {
+            \textbf{Application Controller} \\
+            \textit{\scriptsize (C++ Engine Loop / Input Handler)}
+        };
+
+        % 3. Managers Layer
+        \node [manager, below of=controller, yshift=-0.3cm] (traffic) {
+            \textbf{Traffic Manager} \\
+            \vspace{1mm}
+            \tiny Traffic Levels \\ Update Weights
+        };
+        
+        \node [manager, left=0.6cm of traffic] (route) {
+            \textbf{Route Manager} \\
+            \vspace{1mm}
+            \tiny Feasible Routes \\ Select Best Route
+        };
+        
+        \node [manager, right=0.6cm of traffic] (map) {
+            \textbf{Map Manager} \\
+            \vspace{1mm}
+            \tiny Intersections, Roads \\ Traffic Signals
+        };
+
+        % 4. Core Module Container
+        \node [block, below of=traffic, yshift=-0.6cm, text width=8.8cm, minimum height=2.0cm, fill=black!2!white] (core) {};
+        \node [anchor=north, font=\sffamily\bfseries\small] at (core.north) {Core Module (C/C++)};
+
+        % Sub-blocks inside Core Module
+        \node [subblock, yshift=-0.3cm] (algorithms) at (core.center) {
+            \textbf{Algorithms} \\
+            \vspace{1mm}
+            \tiny Dijkstra's / BFS / DFS
+        };
+        \node [subblock, left=0.4cm of algorithms] (graph) {
+            \textbf{Graph Module} \\
+            \vspace{1mm}
+            \tiny Adjacency List
+        };
+        \node [subblock, right=0.4cm of algorithms] (data) {
+            \textbf{Data Structures} \\
+            \vspace{1mm}
+            \tiny Priority Queue / Lists
+        };
+
+        % 5. Data Storage Layer
+        \node [block, below of=core, yshift=-0.6cm] (storage) {
+            \textbf{File Persistence / Data Storage} \\
+            \textit{\scriptsize map.txt, traffic\_sim.csv, history.log}
+        };
+
+        % Draw Connections
+        \draw [doublearrow] (ui) -- (controller);
+        
+        \draw [arrow] (controller) -- (route.north);
+        \draw [arrow] (controller) -- (traffic.north);
+        \draw [arrow] (controller) -- (map.north);
+        
+        \draw [arrow] (route.south) -- ($(core.north west)!0.18!(core.north east)$);
+        \draw [arrow] (traffic.south) -- (core.north);
+        \draw [arrow] (map.south) -- ($(core.north west)!0.82!(core.north east)$);
+        
+        \draw [doublearrow] (core.south) -- (storage.north);
+
+        % Legend Summary at the bottom
+        \node [below of=storage, yshift=-0.1cm, text width=9.5cm, align=center, font=\sffamily\scriptsize] {
+            \rule{9.5cm}{0.4pt} \\ \vspace{1.5mm}
+            
+        };
+
+    \end{tikzpicture}
     
-    \caption{System Architecture of the Dynamic Traffic-Aware Route Optimization System}
     \label{fig:system_architecture}
 \end{figure}
 \end{minipage}
@@ -276,7 +391,6 @@ The project will show how graphs, adjacency lists, priority queues or min‑heap
 
 \vspace{1mm}
 
-
 \answerbox[5.9cm]{The Traffic Route Tracker will use a predefined road network instead of a full real map. Intersections or locations will be shown as graph vertices and roads will be shown as edges with predefined distance and base travel time. Traffic conditions will be simulated of taken from live data and will be labeled Low, Medium or High. These traffic conditions will change the estimated travel time of the roads.The system will show a few feasible routes at once to keep the interface clear. The recommended route will mainly be chosen by its estimated travel time and distance traffic level and the number of traffic signals will be shown for comparison. Traffic signals will come from map data.The system will not simulate vehicles or detailed real traffic flow. It will not need GPS, live traffic APIs or an internet connection, for its functions. Traffic changes will be added through predefined scenarios or user‑controlled inputs. The graphical interface will focus on showing routes and comparing them. The system will run on one computer using the chosen C/C++ environment and graphical framework.}
 \end{minipage}
 
@@ -288,18 +402,18 @@ The project will show how graphs, adjacency lists, priority queues or min‑heap
 \vspace{1mm}
 
 \answerbox[4cm]{
-1.Cormen, T. H., Leiserson, C. E., Rivest, R. L. \& Stein, C. — Introduction to Algorithms, MIT Press — Graphs, Priority Queues and Dijkstra's Algorithm.
+1. Cormen, T. H., Leiserson, C. E., Rivest, R. L. \& Stein, C. — Introduction to Algorithms, MIT Press — Graphs, Priority Queues and Dijkstra's Algorithm.
 \newline 
-2.Bjarne Stroustrup — The C++ Programming Language — Object-Oriented Programming, Classes, Inheritance and Polymorphism.
+2. Bjarne Stroustrup — The C++ Programming Language — Object-Oriented Programming, Classes, Inheritance and Polymorphism.
 \newline
 Brian W. Kernighan \& Dennis M. Ritchie — The C Programming Language — Structures, Pointers, Dynamic Memory and Data Structures.
 \newline
-3.E. W. Dijkstra — “A Note on Two Problems in Connexion with Graphs,” Numerische Mathematik, 1959.
+3. E. W. Dijkstra — “A Note on Two Problems in Connexion with Graphs,” Numerische Mathematik, 1959.
 \newline
-4.SFML Documentation — Graphics, rendering, event handling and animation.
+4. SFML Documentation — Graphics, rendering, event handling and animation.
 GeeksforGeeks — Graph representations, BFS, DFS, Dijkstra's Algorithm, Priority Queues and Data Structures.
 \newline
-5.General literature on intelligent transportation systems and traffic-flow simulation.}
+5. General literature on intelligent transportation systems and traffic-flow simulation.}
 \end{minipage}
 
 \end{document}
