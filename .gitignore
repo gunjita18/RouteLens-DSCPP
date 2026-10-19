@@ -1,0 +1,11 @@
+# secrets
+config.txt
+.env
+# build outputs
+build/
+bin/
+# downloaded data (regenerate with routelens_fetch; commit dataset.json only
+# if you want teammates to skip fetching — it contains no secrets)
+data/cache/raw/
+data/cache/tiles/
+*.tmp
