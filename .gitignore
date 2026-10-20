@@ -12,6 +12,3 @@ data/osm/*.csv
 data/cache/raw/
 data/cache/tiles/
 *.tmp
-
-# generated OSM data (regenerate with preprocess/export_osm.py)
-data/osm/*.csv
