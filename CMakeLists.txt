@@ -79,7 +79,7 @@ add_test(NAME RoadSnapperTests COMMAND test_road_snapper
 add_executable(routelens_server
     src/server/main.cpp
 )
-target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm)
+target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
 
 # ---------------------------------------------------------------- system libraries
