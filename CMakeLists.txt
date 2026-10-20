@@ -58,3 +58,46 @@ add_executable(routelens_server
 )
 target_link_libraries(routelens_server PRIVATE Crow::Crow)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
+
+# ---------------------------------------------------------------- system libraries
+# Install once: sudo apt install -y libcurl4-openssl-dev libcjson-dev
+find_package(CURL REQUIRED)
+find_path(CJSON_INCLUDE_DIR cjson/cJSON.h)
+find_library(CJSON_LIBRARY NAMES cjson)
+if(NOT CJSON_INCLUDE_DIR OR NOT CJSON_LIBRARY)
+    message(FATAL_ERROR "cJSON not found. Install it with: sudo apt install -y libcjson-dev")
+endif()
+
+# ---------------------------------------------------------------- road network (Sneha)
+add_library(routelens_osm STATIC
+    src/core/graph.c
+    src/data/geo.cpp
+    src/data/osm_loader.cpp
+)
+target_compile_options(routelens_osm PRIVATE -Wall -Wextra -pedantic)
+target_link_libraries(routelens_osm PUBLIC m)
+
+add_executable(routelens_osm_info src/app/osm_info_main.cpp)
+target_link_libraries(routelens_osm_info PRIVATE routelens_osm)
+target_compile_options(routelens_osm_info PRIVATE -Wall -Wextra -pedantic)
+
+add_executable(test_osm tests/test_osm.cpp)
+target_link_libraries(test_osm PRIVATE routelens_osm)
+target_compile_options(test_osm PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME OsmLoaderTests COMMAND test_osm)
+
+# ---------------------------------------------------------------- live traffic (Sneha)
+add_library(routelens_traffic STATIC
+    src/traffic/traffic.cpp
+    src/traffic/tomtom_client.cpp
+    src/traffic/eta.cpp
+    src/data/http_client.cpp
+)
+target_include_directories(routelens_traffic PUBLIC ${CJSON_INCLUDE_DIR})
+target_link_libraries(routelens_traffic PUBLIC routelens_osm CURL::libcurl ${CJSON_LIBRARY})
+target_compile_options(routelens_traffic PRIVATE -Wall -Wextra -pedantic)
+
+add_executable(test_traffic tests/test_traffic.cpp)
+target_link_libraries(test_traffic PRIVATE routelens_traffic)
+target_compile_options(test_traffic PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME TrafficTests COMMAND test_traffic)
