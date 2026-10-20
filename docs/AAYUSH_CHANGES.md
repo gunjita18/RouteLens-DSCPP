@@ -66,9 +66,28 @@ other members were **not modified** (see the last section).
   yet used by a TomTom client. That client has to be written.
 - `tests/test_kdtree.cpp:45` has an unused-variable warning.
 
-## Phase III (Finish): not started
-Mobile and usability-test polish, Docker, GitHub Actions CI, repo maintenance,
-and tests for the graph loader and traffic module.
+## Phase III (Finish)
+
+| Plan item | Status | Files |
+|---|---|---|
+| GitHub Actions CI | **New**: builds with CMake, runs `ctest` and `make test` (OSM loader), checks `web/app.js` syntax; runs on pushes to `main` and on every pull request | `.github/workflows/ci.yml` |
+| Deploy with Docker | **New**: multi-stage image (build stage with CMake and asio, slim runtime stage running as a non-root user, healthcheck on `/api/health`) | `Dockerfile`, `.dockerignore` |
+| Server configurable for containers | **New**: `ROUTELENS_BIND` (default `127.0.0.1`) and `ROUTELENS_PORT` (default `18080`) | `src/server/main.cpp` |
+| Mobile / colour-blind polish, usability test | Mobile layout and colour-blind-safe palette started in Phase II; usability test **not started** | `web/style.css` |
+| Tests for the graph loader and traffic module | **Not started** (needs agreement with the module owner) | none |
+
+Run with Docker (clone with `--recurse-submodules`):
+```bash
+docker build -t routelens .
+docker run --rm -p 18080:18080 routelens
+```
+
+Verification: the Docker build was **not run** (Docker is not installed on this
+machine). Instead I built `routelens_server` from a copy containing only what the
+Dockerfile copies, checked its shared-library needs (libstdc++, libgcc, libc
+only), and ran the healthcheck command against it with the container's
+environment variables: `/api/health` and `/` both returned 200. The CI workflow
+has not run yet; its first run happens on the pull request.
 
 ## Files deliberately not touched (other members)
 `src/core/*`, `src/data/*`, `src/algorithms/min_heap.hpp`,
