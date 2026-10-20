@@ -14,7 +14,7 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ libasio-dev libssl-dev zlib1g-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libasio-dev libcurl4-openssl-dev libcjson-dev libssl-dev zlib1g-dev
 
       - name: Configure (CMake)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -24,9 +24,6 @@ jobs:
 
       - name: Test (CMake targets)
         run: ctest --test-dir build --output-on-failure
-
-      - name: Test (OSM loader, Makefile)
-        run: make test
 
   web-syntax:
     runs-on: ubuntu-latest
