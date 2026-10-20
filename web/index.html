@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RouteLens</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+  <header>
+    <h1>RouteLens</h1>
+    <span class="sub">Multi-route comparison for Dehradun</span>
+    <span id="traffic-badge" class="badge" title="Traffic data source">traffic: …</span>
+  </header>
+
+  <div id="banner" class="banner" role="status" hidden></div>
+
+  <main>
+    <aside id="panel">
+      <section>
+        <h2>1. Pick points</h2>
+        <p class="hint">Click the map: first click sets Start, second sets End.</p>
+        <div class="row">
+          <button id="reset" type="button">Reset points</button>
+        </div>
+        <p id="points-info" class="hint">No points selected.</p>
+      </section>
+
+      <section>
+        <h2>2. Scenario</h2>
+        <div id="scenarios" class="seg" role="radiogroup" aria-label="Scenario">
+          <button type="button" role="radio" aria-checked="true"  data-scenario="normal">Normal</button>
+          <button type="button" role="radio" aria-checked="false" data-scenario="rush_hour">Rush hour</button>
+          <button type="button" role="radio" aria-checked="false" data-scenario="rain">Rain</button>
+          <button type="button" role="radio" aria-checked="false" data-scenario="incident">Incident</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>3. Priorities</h2>
+        <label>Travel time <output id="o_time">50</output>
+          <input id="w_time" type="range" min="0" max="100" value="50"></label>
+        <label>Distance <output id="o_distance">25</output>
+          <input id="w_distance" type="range" min="0" max="100" value="25"></label>
+        <label>Traffic signals <output id="o_signals">10</output>
+          <input id="w_signals" type="range" min="0" max="100" value="10"></label>
+        <label>Congestion <output id="o_traffic">15</output>
+          <input id="w_traffic" type="range" min="0" max="100" value="15"></label>
+        <button id="find" type="button" class="primary" disabled>Find routes</button>
+      </section>
+
+      <section>
+        <h2>Routes</h2>
+        <div id="cards" aria-live="polite"><p class="hint">Results appear here.</p></div>
+      </section>
+
+      <section>
+        <h2>Comparison</h2>
+        <div class="chart-wrap"><canvas id="chart" aria-label="Route comparison chart" role="img"></canvas></div>
+      </section>
+    </aside>
+
+    <div id="map" aria-label="Map"></div>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="/web/app.js"></script>
+</body>
+</html>
