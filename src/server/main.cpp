@@ -11,10 +11,12 @@
 #include "crow.h"
 #include "request_params.hpp"
 #include "route_provider.hpp"
+#include "../data/http_client.hpp"
 #include "../data/osm_loader.hpp"
 #include "../spatial/road_snapper.hpp"
 #include "../traffic/lru_cache.hpp"
 #include "../traffic/rate_limiter.hpp"
+#include "../traffic/tomtom_client.hpp"
 
 namespace {
 
@@ -28,6 +30,13 @@ std::string webDir() {
 std::string dataDir() {
     const char* d = std::getenv("ROUTELENS_DATA_DIR");
     return d ? d : "data/osm";
+}
+
+// Directory for the TomTom daily-usage counter (override with ROUTELENS_CACHE_DIR).
+// It must be writable; in Docker mount a volume there to keep the count across restarts.
+std::string cacheDir() {
+    const char* d = std::getenv("ROUTELENS_CACHE_DIR");
+    return d ? d : "data/cache";
 }
 
 // A click farther than this from any road is rejected.
@@ -108,7 +117,35 @@ int main() {
     rl::LRUCache<std::string, double> trafficCache(1024);
     std::mutex cacheMutex;
     std::unique_ptr<rl::RouteProvider> provider = std::make_unique<rl::NullRouteProvider>();
-    const bool trafficKeyConfigured = std::getenv("TOMTOM_API_KEY") != nullptr;
+
+    // TomTom live traffic (client owned by the traffic module). The key is read
+    // only from the environment, goes only into the request URL inside the
+    // client, and is never logged or sent to the browser. Without a key the
+    // client disables itself and the server reports free-flow data.
+    // The routing engine feeds it through rl::updateRouteTraffic().
+    const char* keyEnv = std::getenv("TOMTOM_API_KEY");
+    const bool trafficKeyConfigured = keyEnv != nullptr && keyEnv[0] != '\0';
+    rl::HttpClient http("RouteLens/0.1 (Graphic Era PBL project)", 10);
+    rl::TomTomOptions ttOptions;
+    if (trafficKeyConfigured) {
+        ttOptions.apiKey = keyEnv;
+    }
+    ttOptions.usageFile = cacheDir() + "/tomtom_usage.txt";
+    rl::TomTomClient tomtom(ttOptions, [&http](const std::string& url) { return http.get(url); });
+    std::mutex tomtomMutex;  // TomTomClient is not thread-safe and Crow is multithreaded
+    bool trafficUsable = trafficKeyConfigured;
+    std::string selfTestStatus = "not_run";
+
+    // Opt-in check that the key works: one real request (counts toward the daily
+    // quota). Run with ROUTELENS_TRAFFIC_SELFTEST=1; the result is logged and
+    // shown in /api/traffic/status. Only the status is logged, never the URL.
+    if (std::getenv("ROUTELENS_TRAFFIC_SELFTEST") != nullptr) {
+        const rl::FetchResult r = tomtom.fetch({30.3243, 78.0412});  // Clock Tower
+        selfTestStatus = rl::fetchStatusName(r.status);
+        trafficUsable = rl::hasSegment(r.status) || r.status == rl::FetchStatus::NoCoverage ||
+                        r.status == rl::FetchStatus::CachedNoCoverage;
+        CROW_LOG_INFO << "TomTom self-test: " << selfTestStatus;
+    }
 
     // Road network (owned by the map-data module) and the KD-tree that snaps
     // clicks onto it. Without the CSVs the server still runs; /api/routes then
@@ -144,11 +181,19 @@ int main() {
     CROW_ROUTE(app, "/api/traffic/status")
     ([&] {
         crow::json::wvalue response;
-        response["source"] = trafficKeyConfigured ? "live" : "free_flow_fallback";
+        response["source"] = trafficUsable ? "live" : "free_flow_fallback";
         response["api_key_configured"] = trafficKeyConfigured;
         response["rate_limit"]["max_requests"] = 5;
         response["rate_limit"]["window_seconds"] = 1;
         response["rate_limit"]["current_count"] = trafficLimiter.current_count();
+        {
+            std::lock_guard<std::mutex> lock(tomtomMutex);
+            response["tomtom"]["requests_today"] = tomtom.requestsToday();
+            response["tomtom"]["requests_this_run"] = tomtom.requestsThisRun();
+            response["tomtom"]["cache_hits"] = tomtom.cacheHits();
+            response["tomtom"]["daily_cap"] = ttOptions.dailyCap;
+        }
+        response["tomtom"]["self_test"] = selfTestStatus;
         std::lock_guard<std::mutex> lock(cacheMutex);
         response["cache"]["size"] = trafficCache.size();
         response["cache"]["capacity"] = trafficCache.capacity();

@@ -61,9 +61,11 @@ other members were **not modified** (see the last section).
 ### Known gaps and open items (mine)
 - ~~KD-tree not connected to the OSM graph~~: done, see "OSM road network and
   KD-tree road snapping" below.
-- The rate limiter and LRU cache are exposed in `/api/traffic/status` but not
-  yet used by a TomTom client. The map-data and traffic owner has written that
-  client; wiring it into the server is still open.
+- The TomTom client (written by the map-data and traffic owner) is now wired
+  into the server, see "TomTom key and traffic client wiring" below. Still open:
+  my `RateLimiter` and `LRUCache` are not used by it, because the client already
+  spaces its own requests and keeps its own spatial cache; real traffic data
+  only flows once the routing engine calls `updateRouteTraffic()`.
 - ~~`tests/test_kdtree.cpp` unused-variable warning~~: fixed. It was a symptom
   of a real bug: Release builds define `NDEBUG`, which turned every `assert`
   in that test into a no-op, so CI would have reported it as passing without
@@ -166,6 +168,52 @@ routes plus 2 snapped markers, or 2 markers plus the banner on a 501.
 Limits: the snapped point is the nearer *end* of the nearest road, not the exact
 spot on it, so very long roads can add a detour at either end. A click is
 rejected only beyond 500 m. Routes themselves still need the routing engine.
+
+## TomTom key and traffic client wiring
+
+How the key is used (it is never in git, in the image, in a log or in any API
+response):
+
+| Where | What |
+|---|---|
+| Local | Put `TOMTOM_API_KEY=...` in `.env` (git-ignored) and start with `set -a; source .env; set +a; ./build/routelens_server`. |
+| Server (`src/server/main.cpp`) | Reads `TOMTOM_API_KEY` from the environment only and passes it to `TomTomOptions.apiKey`. The client puts it in the request URL only. An empty or missing key disables the client, and the server reports free-flow data (`source: free_flow_fallback`). |
+| Thread safety | The client is not thread-safe and Crow is multithreaded, so every use is guarded by a mutex. |
+| Check that the key works | Start with `ROUTELENS_TRAFFIC_SELFTEST=1`: one real request (counts toward the daily quota) for the Clock Tower; the status is logged and shown in `/api/traffic/status` as `tomtom.self_test`. A rejected key turns `source` back to `free_flow_fallback`. |
+| `/api/traffic/status` | New `tomtom` block: `requests_today`, `requests_this_run`, `cache_hits`, `daily_cap`, `self_test`. |
+| Daily usage file | `ROUTELENS_CACHE_DIR` (default `data/cache`) holds `tomtom_usage.txt`, the client's own daily counter (cap 2,000 of TomTom's 2,500 free requests). |
+| Docker | Runtime stage now has `libcurl4t64`, `libcjson1` and `ca-certificates` (without certificates HTTPS fails in the container) and a writable `/var/lib/routelens`. Run with `--env-file .env -v routelens-cache:/var/lib/routelens`. |
+| Build | `routelens_server` links `routelens_traffic` (`CMakeLists.txt`). |
+
+Verification (2026-10-20/21), using a deliberately fake key (`invalid-test-key`,
+not a secret) so no real key was needed or seen:
+- `ctest` 7/7 pass.
+- No key: self-test reports `disabled` and makes no network request.
+- Fake key: a real HTTPS request reached TomTom and was answered `key rejected`;
+  one request was counted, the usage file was written, `source` stayed
+  `free_flow_fallback`. The key text appeared nowhere in the log, status, health
+  or routes output.
+- Same test inside the Docker image (131 MB): HTTPS worked, so the certificates
+  and libraries are right; the non-root user wrote the usage file into the
+  mounted volume; the key did not appear in the container log.
+- **Verified with a real key** (2026-10-20, key loaded from the git-ignored
+  `.env`, never printed): a direct request returned HTTP 200; the server
+  self-test returned `ok`; `/api/traffic/status` showed `source: live`,
+  `self_test: ok`, `requests_this_run: 1`; the website badge read
+  "traffic: live" with no JavaScript errors; the daily counter persisted across
+  restarts (`requests_today: 2`). The same run inside Docker (key passed with
+  `--env-file .env`) also gave `self_test: ok`. In every case the key appeared
+  0 times in the server log, container log, status, health and website
+  responses. The server and the 7-test suite also build warning-free in a
+  fresh Release build.
+- Caveat: without `ROUTELENS_TRAFFIC_SELFTEST=1`, `source: live` only means a key
+  is configured, not that it was checked. Real fetches happen only when the
+  routing engine calls `updateRouteTraffic()`.
+- `data/cache/` (the daily-usage counter) is now git-ignored.
+
+Limits: the client's segment cache is an unbounded vector (a long-running server
+should cap it; ask the traffic owner). Traffic reaches routes only through the
+routing engine calling `updateRouteTraffic()`, which does not exist yet.
 
 ## Files deliberately not touched (other members)
 `src/core/*`, `src/data/*`, `src/algorithms/min_heap.hpp`,
