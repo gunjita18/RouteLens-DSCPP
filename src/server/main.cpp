@@ -11,6 +11,8 @@
 #include "crow.h"
 #include "request_params.hpp"
 #include "route_provider.hpp"
+#include "../data/osm_loader.hpp"
+#include "../spatial/road_snapper.hpp"
 #include "../traffic/lru_cache.hpp"
 #include "../traffic/rate_limiter.hpp"
 
@@ -21,6 +23,15 @@ std::string webDir() {
     const char* d = std::getenv("ROUTELENS_WEB_DIR");
     return d ? d : "web";
 }
+
+// Directory holding nodes.csv and edges.csv (override with ROUTELENS_DATA_DIR).
+std::string dataDir() {
+    const char* d = std::getenv("ROUTELENS_DATA_DIR");
+    return d ? d : "data/osm";
+}
+
+// A click farther than this from any road is rejected.
+constexpr double kMaxSnapMeters = 500.0;
 
 // Bind address and port. Defaults keep the server local-only; the Docker image
 // sets ROUTELENS_BIND=0.0.0.0 so the container port can be published.
@@ -99,11 +110,34 @@ int main() {
     std::unique_ptr<rl::RouteProvider> provider = std::make_unique<rl::NullRouteProvider>();
     const bool trafficKeyConfigured = std::getenv("TOMTOM_API_KEY") != nullptr;
 
+    // Road network (owned by the map-data module) and the KD-tree that snaps
+    // clicks onto it. Without the CSVs the server still runs; /api/routes then
+    // answers 503.
+    rl::OsmNetwork network;
+    std::unique_ptr<rl::RoadSnapper> snapper;
+    {
+        std::string loadErr;
+        const std::string dir = dataDir();
+        if (rl::loadOsmNetwork(dir, network, loadErr)) {
+            snapper = std::make_unique<rl::RoadSnapper>(network);
+            CROW_LOG_INFO << "road network loaded from " << dir << ": " << network.stats.keptNodes
+                          << " nodes, " << network.stats.keptEdges << " edges, "
+                          << snapper->pointCount() << " KD-tree points";
+        } else {
+            CROW_LOG_WARNING << "road network NOT loaded from " << dir << ": " << loadErr;
+        }
+    }
+
     CROW_ROUTE(app, "/api/health")
-    ([] {
+    ([&] {
         crow::json::wvalue response;
         response["status"] = "ok";
         response["service"] = "RouteLens API";
+        response["network"]["loaded"] = snapper != nullptr;
+        if (snapper) {
+            response["network"]["nodes"] = network.stats.keptNodes;
+            response["network"]["edges"] = network.stats.keptEdges;
+        }
         return response;
     });
 
@@ -135,12 +169,47 @@ int main() {
         if (!parsed) {
             return jsonError(400, err);
         }
+        if (!snapper) {
+            return jsonError(503, "road network not loaded on the server");
+        }
+
+        const rl::SnapResult from = snapper->snap({parsed->fromLat, parsed->fromLon}, kMaxSnapMeters);
+        const rl::SnapResult to = snapper->snap({parsed->toLat, parsed->toLon}, kMaxSnapMeters);
+        if (!from.found) {
+            return jsonError(422, "no road within 500 m of the start point");
+        }
+        if (!to.found) {
+            return jsonError(422, "no road within 500 m of the end point");
+        }
+        if (from.node == to.node) {
+            return jsonError(422, "start and end snap to the same junction; pick points farther apart");
+        }
+        parsed->fromNode = from.node;
+        parsed->toNode = to.node;
+
+        // Where each click landed on the road network, shown on the website.
+        auto addSnapped = [&](crow::json::wvalue& body) {
+            auto put = [&](const char* key, const rl::SnapResult& s) {
+                body["snapped"][key]["node"] = s.node;
+                body["snapped"][key]["lat"] = s.nodePos.lat;
+                body["snapped"][key]["lon"] = s.nodePos.lon;
+                body["snapped"][key]["road_class"] = s.roadClass;
+                body["snapped"][key]["road_distance_m"] = s.roadDistanceM;
+            };
+            put("from", from);
+            put("to", to);
+        };
+
         if (!provider->available()) {
-            return jsonError(501, "routing engine not connected yet");
+            crow::json::wvalue body;
+            body["error"] = "routing engine not connected yet";
+            addSnapped(body);
+            return jsonResponse(501, body);
         }
 
         crow::json::wvalue out;
         out["scenario"] = parsed->scenario;
+        addSnapped(out);
         std::size_t i = 0;
         for (const auto& r : provider->compute(*parsed)) {
             auto& item = out["routes"][i++];

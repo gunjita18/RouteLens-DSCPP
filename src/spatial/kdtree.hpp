@@ -10,6 +10,9 @@ namespace routelens {
 struct Point {
     double x;
     double y;
+    // Caller's payload carried through the search, e.g. which road this point
+    // lies on. Ignored by the tree itself; defaults to 0 for plain points.
+    std::size_t id = 0;
 };
 
 class KDTree {

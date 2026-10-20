@@ -4,6 +4,9 @@ config.txt
 # build outputs
 build/
 bin/
+# OSM road network export (about 13 MB; regenerate with preprocess/export_osm.py
+# or get it from the map-data owner). meta.txt stays in git.
+data/osm/*.csv
 # downloaded data (regenerate with routelens_fetch; commit dataset.json only
 # if you want teammates to skip fetching — it contains no secrets)
 data/cache/raw/
