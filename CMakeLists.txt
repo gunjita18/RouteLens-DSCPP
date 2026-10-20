@@ -53,10 +53,33 @@ target_include_directories(test_request_params PRIVATE
 target_compile_options(test_request_params PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RequestParamsTests COMMAND test_request_params)
 
+# Road network: the map-data module's graph and OSM loader, plus the KD-tree
+# road snapper that connects clicked points to it.
+add_library(routelens_osm STATIC
+    src/core/graph.c
+    src/data/osm_loader.cpp
+    src/spatial/kdtree.cpp
+    src/spatial/road_snapper.cpp
+)
+target_compile_options(routelens_osm PRIVATE -Wall -Wextra)
+
+# Runs on a small built-in network; also checks the real Dehradun CSVs when
+# data/osm/nodes.csv and edges.csv are present (they are not in git).
+add_executable(test_road_snapper
+    tests/test_road_snapper.cpp
+)
+target_include_directories(test_road_snapper PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/spatial
+)
+target_link_libraries(test_road_snapper PRIVATE routelens_osm)
+target_compile_options(test_road_snapper PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RoadSnapperTests COMMAND test_road_snapper
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(routelens_server
     src/server/main.cpp
 )
-target_link_libraries(routelens_server PRIVATE Crow::Crow)
+target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
 
 # ---------------------------------------------------------------- system libraries

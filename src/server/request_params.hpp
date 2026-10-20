@@ -19,6 +19,9 @@ struct RouteRequest {
     // User priorities from the website sliders, normalised to sum to 1.
     double wTime = 0.25, wDistance = 0.25, wJunctions = 0.25, wTraffic = 0.25;
     std::string scenario = "normal";
+    // Graph nodes the two clicks were snapped to by the server (-1 = not snapped).
+    // The routing engine searches between these.
+    int fromNode = -1, toNode = -1;
 };
 
 // Returns the raw query-string value for a key, or nullopt if absent.
