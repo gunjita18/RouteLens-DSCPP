@@ -1,0 +1,11 @@
+.git
+build/
+bin/
+data/
+docs/
+external/Crow/docs/
+external/Crow/tests/
+external/Crow/examples/
+config.txt
+.env
+*.save

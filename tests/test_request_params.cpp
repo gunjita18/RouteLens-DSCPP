@@ -59,14 +59,14 @@ int main() {
     m = valid;
     m["w_time"] = "3";
     m["w_distance"] = "1";
-    m["w_signals"] = "0";
+    m["w_junctions"] = "0";
     m["w_traffic"] = "0";
     auto w = rl::parseRouteRequest(from(m), err);
     check(w && w->wTime > 0.749 && w->wTime < 0.751, "Weights are normalised to sum 1");
-    check(w && w->wSignals == 0.0, "Zero weight is allowed");
+    check(w && w->wJunctions == 0.0, "Zero weight is allowed");
 
     m = valid;
-    m["w_time"] = m["w_distance"] = m["w_signals"] = m["w_traffic"] = "0";
+    m["w_time"] = m["w_distance"] = m["w_junctions"] = m["w_traffic"] = "0";
     check(!rl::parseRouteRequest(from(m), err), "All-zero weights are rejected");
 
     m = valid;

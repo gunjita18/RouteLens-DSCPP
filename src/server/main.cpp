@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
@@ -19,6 +20,24 @@ namespace {
 std::string webDir() {
     const char* d = std::getenv("ROUTELENS_WEB_DIR");
     return d ? d : "web";
+}
+
+// Bind address and port. Defaults keep the server local-only; the Docker image
+// sets ROUTELENS_BIND=0.0.0.0 so the container port can be published.
+std::string bindAddress() {
+    const char* a = std::getenv("ROUTELENS_BIND");
+    return a ? a : "127.0.0.1";
+}
+
+std::uint16_t listenPort() {
+    const char* p = std::getenv("ROUTELENS_PORT");
+    if (p) {
+        const long v = std::strtol(p, nullptr, 10);
+        if (v > 0 && v < 65536) {
+            return static_cast<std::uint16_t>(v);
+        }
+    }
+    return 18080;
 }
 
 bool readFile(const std::string& path, std::string& out) {
@@ -126,9 +145,13 @@ int main() {
         for (const auto& r : provider->compute(*parsed)) {
             auto& item = out["routes"][i++];
             item["name"] = r.name;
-            item["eta_min"] = r.etaMinutes;
+            item["eta_s"] = r.etaSeconds;
+            item["free_flow_eta_s"] = r.freeFlowEtaSeconds;
             item["distance_km"] = r.distanceKm;
-            item["signals"] = r.signals;
+            item["junctions"] = r.junctions;
+            item["coverage"]["live_pct"] = r.livePct;
+            item["coverage"]["typical_pct"] = r.typicalPct;
+            item["coverage"]["estimated_pct"] = r.estimatedPct;
             item["traffic"] = r.trafficLevel;
             item["score"] = r.score;
             item["recommended"] = r.recommended;
@@ -145,8 +168,8 @@ int main() {
     CROW_ROUTE(app, "/")([] { return serveFile("index.html"); });
     CROW_ROUTE(app, "/web/<string>")([](const std::string& name) { return serveFile(name); });
 
-    app.port(18080)
-       .bindaddr("127.0.0.1")
+    app.port(listenPort())
+       .bindaddr(bindAddress())
        .multithreaded()
        .run();
 }
