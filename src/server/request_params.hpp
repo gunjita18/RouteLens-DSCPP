@@ -17,7 +17,7 @@ constexpr double kMaxLon = 78.15;
 struct RouteRequest {
     double fromLat = 0, fromLon = 0, toLat = 0, toLon = 0;
     // User priorities from the website sliders, normalised to sum to 1.
-    double wTime = 0.25, wDistance = 0.25, wSignals = 0.25, wTraffic = 0.25;
+    double wTime = 0.25, wDistance = 0.25, wJunctions = 0.25, wTraffic = 0.25;
     std::string scenario = "normal";
 };
 
@@ -83,7 +83,7 @@ inline std::optional<RouteRequest> parseRouteRequest(const ParamGetter& get,
     double t = 1, d = 1, s = 1, c = 1;
     if (!detail::optionalWeight(get, "w_time", t, err) ||
         !detail::optionalWeight(get, "w_distance", d, err) ||
-        !detail::optionalWeight(get, "w_signals", s, err) ||
+        !detail::optionalWeight(get, "w_junctions", s, err) ||
         !detail::optionalWeight(get, "w_traffic", c, err)) {
         return std::nullopt;
     }
@@ -94,7 +94,7 @@ inline std::optional<RouteRequest> parseRouteRequest(const ParamGetter& get,
     }
     r.wTime = t / sum;
     r.wDistance = d / sum;
-    r.wSignals = s / sum;
+    r.wJunctions = s / sum;
     r.wTraffic = c / sum;
 
     if (auto sc = get("scenario")) {
