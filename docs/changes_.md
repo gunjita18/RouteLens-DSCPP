@@ -24,7 +24,7 @@ other members were **not modified** (see the last section).
 - `tests/test_request_params.cpp`: 12 checks for query validation (missing and
   non-numeric values, NaN, outside Dehradun, weight normalisation, zero and
   negative weights, unknown scenario).
-- `docs/AAYUSH_CHANGES.md`: this file.
+- `docs/changes_.md`: this file.
 
 ### API summary
 | Endpoint | Behaviour |
