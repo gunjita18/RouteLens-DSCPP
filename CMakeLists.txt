@@ -1,6 +1,11 @@
 
 cmake_minimum_required(VERSION 3.16)
+
 project(RouteLens LANGUAGES C CXX)
+
+set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/Crow)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -38,3 +43,18 @@ target_include_directories(test_rate_limiter PRIVATE
 )
 target_compile_options(test_rate_limiter PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RateLimiterTests COMMAND test_rate_limiter)
+
+add_executable(test_request_params
+    tests/test_request_params.cpp
+)
+target_include_directories(test_request_params PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+)
+target_compile_options(test_request_params PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RequestParamsTests COMMAND test_request_params)
+
+add_executable(routelens_server
+    src/server/main.cpp
+)
+target_link_libraries(routelens_server PRIVATE Crow::Crow)
+target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
