@@ -2,6 +2,7 @@
   'use strict';
 
   var COLORS = ['#0072b2', '#e69f00', '#009e73'];
+  var CHART_COLORS = ['#0072b2', '#56b4e9', '#e69f00', '#cc79a7'];  // Okabe-Ito
   var DASH = [null, '10 8', '2 8'];
   var SCENARIO_LABEL = { normal: 'Normal', rush_hour: 'Rush hour', rain: 'Rain', incident: 'Incident' };
 
@@ -70,7 +71,7 @@
   });
 
   // ---- priority sliders ------------------------------------------------
-  ['time', 'distance', 'signals', 'traffic'].forEach(function (k) {
+  ['time', 'distance', 'junctions', 'traffic'].forEach(function (k) {
     $('w_' + k).addEventListener('input', function () { $('o_' + k).textContent = $('w_' + k).value; });
     $('w_' + k).addEventListener('change', function () { if (points.length === 2) { findRoutes(); } });
   });
@@ -82,7 +83,7 @@
       from_lat: points[0].lat, from_lon: points[0].lon,
       to_lat: points[1].lat, to_lon: points[1].lon,
       w_time: $('w_time').value, w_distance: $('w_distance').value,
-      w_signals: $('w_signals').value, w_traffic: $('w_traffic').value,
+      w_junctions: $('w_junctions').value, w_traffic: $('w_traffic').value,
       scenario: scenario
     });
     return q.toString();
@@ -149,12 +150,33 @@
     drawChart(routes);
   }
 
+  // Seconds -> "37 min" / "1 h 5 min". Rounding happens here, at display time.
+  function formatDuration(seconds) {
+    var total = Math.round(seconds / 60);
+    if (total < 1) { return '< 1 min'; }
+    if (total < 60) { return total + ' min'; }
+    var h = Math.floor(total / 60);
+    var m = total % 60;
+    return m === 0 ? h + ' h' : h + ' h ' + m + ' min';
+  }
+
+  function pct(v) { return Math.round(v) + '%'; }
+
   function stats(r) {
+    var rows = [['ETA (with traffic)', formatDuration(r.eta_s)]];
+    if (typeof r.free_flow_eta_s === 'number' && r.free_flow_eta_s > 0) {
+      rows.push(['ETA (no traffic)', formatDuration(r.free_flow_eta_s)]);
+    }
+    rows.push(['Distance', r.distance_km.toFixed(1) + ' km'],
+              ['Major junctions', String(r.junctions)],
+              ['Traffic', r.traffic]);
+    if (r.coverage) {
+      rows.push(['Data', 'live ' + pct(r.coverage.live_pct) +
+                         ', typical ' + pct(r.coverage.typical_pct) +
+                         ', estimated ' + pct(r.coverage.estimated_pct)]);
+    }
     var dl = el('dl');
-    [['ETA', r.eta_min.toFixed(1) + ' min'],
-     ['Distance', r.distance_km.toFixed(1) + ' km'],
-     ['Signals', String(r.signals)],
-     ['Traffic', r.traffic]].forEach(function (p) {
+    rows.forEach(function (p) {
       dl.appendChild(el('dt', null, p[0]));
       dl.appendChild(el('dd', null, p[1]));
     });
@@ -171,16 +193,17 @@
   function drawChart(routes) {
     var labels = routes.map(function (_, i) { return 'Route ' + (i + 1); });
     var series = [
-      ['ETA (min)', function (r) { return r.eta_min; }],
+      ['ETA with traffic (min)', function (r) { return r.eta_s / 60; }],
+      ['ETA no traffic (min)', function (r) { return (r.free_flow_eta_s || 0) / 60; }],
       ['Distance (km)', function (r) { return r.distance_km; }],
-      ['Signals', function (r) { return r.signals; }]
+      ['Major junctions', function (r) { return r.junctions; }]
     ];
     chart = new Chart($('chart'), {
       type: 'bar',
       data: {
         labels: labels,
         datasets: series.map(function (s, k) {
-          return { label: s[0], data: routes.map(s[1]), backgroundColor: COLORS[k] };
+          return { label: s[0], data: routes.map(s[1]), backgroundColor: CHART_COLORS[k] };
         })
       },
       options: { responsive: true, maintainAspectRatio: false }

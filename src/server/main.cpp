@@ -145,9 +145,13 @@ int main() {
         for (const auto& r : provider->compute(*parsed)) {
             auto& item = out["routes"][i++];
             item["name"] = r.name;
-            item["eta_min"] = r.etaMinutes;
+            item["eta_s"] = r.etaSeconds;
+            item["free_flow_eta_s"] = r.freeFlowEtaSeconds;
             item["distance_km"] = r.distanceKm;
-            item["signals"] = r.signals;
+            item["junctions"] = r.junctions;
+            item["coverage"]["live_pct"] = r.livePct;
+            item["coverage"]["typical_pct"] = r.typicalPct;
+            item["coverage"]["estimated_pct"] = r.estimatedPct;
             item["traffic"] = r.trafficLevel;
             item["score"] = r.score;
             item["recommended"] = r.recommended;

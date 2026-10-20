@@ -89,6 +89,35 @@ only), and ran the healthcheck command against it with the container's
 environment variables: `/api/health` and `/` both returned 200. The CI workflow
 has not run yet; its first run happens on the pull request.
 
+## RouteInfo and website update (agreed with Sneha)
+
+Changes proposed by Sneha (traffic and map data) and accepted:
+
+| Change | Where |
+|---|---|
+| ETA is sent in **seconds** (`eta_s`); the website formats it as "37 min" / "1 h 5 min" and rounds only at display time | `src/server/route_provider.hpp`, `src/server/main.cpp`, `web/app.js` |
+| **Free-flow ETA** (`free_flow_eta_s`) next to the traffic ETA, so the effect of traffic is visible | same files, plus the comparison chart |
+| **Data coverage** (`coverage.live_pct`, `typical_pct`, `estimated_pct`) so the app does not overstate how much of a route has live data | same files |
+| "Signals" renamed to **"major junctions"** (`junctions`, query parameter `w_junctions`): OSM maps only 6 signals in Dehradun | `request_params.hpp`, `tests/test_request_params.cpp`, `web/index.html`, `web/app.js` |
+| Range sliders no longer overflow their section on narrow screens | `web/style.css` |
+
+The API field names changed (`eta_min` to `eta_s`, `signals` to `junctions`).
+Nothing consumed the old names yet, since the routing engine is not connected.
+Anyone implementing `RouteProvider` should use the new `RouteInfo` fields.
+
+Verification (2026-10-20):
+- C++ build and `ctest`: 4/4 pass.
+- The real `web/app.js` was run in headless Edge with a stand-in for `/api/routes`
+  (test harness only, not part of the project): the map loads, two clicks set
+  Start and End, no JavaScript errors, durations show as "37 min", "1 h 5 min",
+  "1 h" and "< 1 min", coverage and junction labels show, the chart has four
+  series, and the "routing engine not connected" banner shows on a 501.
+- Layout was checked in 360 px and 400 px wide frames: no horizontal overflow.
+- **Not verified:** real routes from the routing engine (not connected yet),
+  real touch devices, and a screen reader.
+- Usability note: on a phone the map is above the controls, so "Find routes" is
+  below the fold. Worth watching in the classmate usability test.
+
 ## Files deliberately not touched (other members)
 `src/core/*`, `src/data/*`, `src/algorithms/min_heap.hpp`,
 `src/app/osm_info_main.cpp`, `preprocess/export_osm.py`, `tests/test_osm.cpp`,

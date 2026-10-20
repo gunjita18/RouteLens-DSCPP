@@ -13,9 +13,15 @@ namespace rl {
 struct RouteInfo {
     std::string name;
     std::vector<std::pair<double, double>> polyline;  // (lat, lon)
-    double etaMinutes = 0;
+    double etaSeconds = 0;          // with traffic; the website formats it
+    double freeFlowEtaSeconds = 0;  // same route with no traffic, to show the effect
     double distanceKm = 0;
-    int signals = 0;
+    // Major junctions, not "signals": OSM maps very few signals in Dehradun.
+    int junctions = 0;
+    // Share of the route (0-100) by data source, so live data is not overstated.
+    double livePct = 0;
+    double typicalPct = 0;
+    double estimatedPct = 0;
     std::string trafficLevel;  // "Low" | "Medium" | "High"
     double score = 0;          // lower is better, from the user's priorities
     bool recommended = false;
