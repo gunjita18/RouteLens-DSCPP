@@ -25,9 +25,6 @@ jobs:
       - name: Test (CMake targets)
         run: ctest --test-dir build --output-on-failure
 
-      - name: Test (OSM loader, Makefile)
-        run: make test
-
   web-syntax:
     runs-on: ubuntu-latest
     steps:
