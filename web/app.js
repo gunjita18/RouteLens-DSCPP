@@ -98,8 +98,10 @@
       .then(function (res) {
         if (res.status === 200) {
           render(res.body.routes || []);
+          drawSnapped(res.body.snapped);
         } else if (res.status === 501) {
           clearRoutes();
+          drawSnapped(res.body.snapped);
           showBanner('Routing engine not connected yet. No routes can be computed.');
         } else {
           clearRoutes();
@@ -113,6 +115,20 @@
   }
 
   // ---- rendering -------------------------------------------------------
+  // Shows where each click landed on the road network (the junction the
+  // server snapped it to). Kept in routeLayers so clearRoutes() removes them.
+  function drawSnapped(snapped) {
+    if (!snapped) { return; }
+    [['from', 'Start'], ['to', 'End']].forEach(function (k) {
+      var s = snapped[k[0]];
+      if (!s) { return; }
+      var label = k[1] + ' snapped to a ' + s.road_class + ' road (' + Math.round(s.road_distance_m) + ' m from your click)';
+      var m = L.circleMarker([s.lat, s.lon], { radius: 7, color: '#1c2430', weight: 2, fillColor: '#ffffff', fillOpacity: 1 })
+        .bindTooltip(el('span', null, label)).addTo(map);
+      routeLayers.push(m);
+    });
+  }
+
   function clearRoutes() {
     routeLayers.forEach(function (l) { map.removeLayer(l); });
     routeLayers = [];

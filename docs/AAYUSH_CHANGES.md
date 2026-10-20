@@ -59,12 +59,15 @@ other members were **not modified** (see the last section).
   `http://127.0.0.1:18080/` after running `routelens_server`.
 
 ### Known gaps and open items (mine)
-- KD-tree stores plain `(x, y)` points. It is not yet connected to the OSM graph
-  nodes, so "nearest road to clicked point" will be wired once the loader data
-  is available.
+- ~~KD-tree not connected to the OSM graph~~: done, see "OSM road network and
+  KD-tree road snapping" below.
 - The rate limiter and LRU cache are exposed in `/api/traffic/status` but not
-  yet used by a TomTom client. That client has to be written.
-- `tests/test_kdtree.cpp:45` has an unused-variable warning.
+  yet used by a TomTom client. The map-data and traffic owner has written that
+  client; wiring it into the server is still open.
+- ~~`tests/test_kdtree.cpp` unused-variable warning~~: fixed. It was a symptom
+  of a real bug: Release builds define `NDEBUG`, which turned every `assert`
+  in that test into a no-op, so CI would have reported it as passing without
+  checking anything.
 
 ## Phase III (Finish)
 
@@ -117,6 +120,38 @@ Verification (2026-10-20):
   real touch devices, and a screen reader.
 - Usability note: on a phone the map is above the controls, so "Find routes" is
   below the fold. Worth watching in the classmate usability test.
+
+## OSM road network and KD-tree road snapping
+
+Uses the Dehradun export provided by the map-data owner (`nodes.csv`,
+`edges.csv`; 31,802 nodes and 72,626 edges after loading, identical to
+`data/osm/meta.txt`). The CSVs are **not** committed: `data/osm/*.csv` is now
+in `.gitignore`.
+
+| Plan item | Change | Files |
+|---|---|---|
+| KD-tree finds the nearest road to a clicked point | New `RoadSnapper`: the KD-tree holds points spaced at most 20 m apart along every road shape (609,723 points), each tagged with its road. Distances are computed in local metres (longitude is scaled by cos(latitude)). A click snaps to the nearest *road*, even in the middle of a long straight road, and to the nearer end of it as the routing node. | `src/spatial/road_snapper.{hpp,cpp}` (new), `src/spatial/kdtree.hpp` (`Point` gains an `id` payload; existing uses unchanged) |
+| Server uses the road network | Loads the CSVs at startup (`ROUTELENS_DATA_DIR`, default `data/osm`). `/api/routes` snaps both clicks and passes graph node ids to the routing engine in `RouteRequest::fromNode/toNode`. Rejects a click farther than 500 m from any road (`422`), start and end on the same junction (`422`) and a missing network (`503`). Responses include `snapped` (node, position, road class, distance). `/api/health` reports whether the network is loaded. | `src/server/main.cpp`, `src/server/request_params.hpp` |
+| Website shows the snap | White ring markers show where each click landed on the road network, with a tooltip (road class and distance). | `web/app.js` |
+| Tests | 15 checks: a hand-made network (nearest road beats nearer vertices of another road, node choice, rejection, empty network) plus, when the CSVs are present, 200 random points on the real network compared against exact brute force (worst gap 3.6 m) and a Clock Tower landmark. Skips the real-data part when the CSVs are absent, so CI still passes. | `tests/test_road_snapper.cpp` (new) |
+| Build | `routelens_osm` static library (the map-data module's `graph.c` and `osm_loader.cpp` plus `kdtree.cpp` and the snapper), used by the server and the new test. Their sources are only compiled, not modified. | `CMakeLists.txt` |
+| Docker | `ROUTELENS_DATA_DIR=/app/data/osm`; the CSVs are mounted, not baked into the image: `docker run -p 18080:18080 -v "$PWD/data/osm:/app/data/osm:ro" routelens`. | `Dockerfile` |
+
+Measured on the real network (WSL, Release build): KD-tree built in about
+80 ms, server ready in 0.33 s, 56 MB resident, about 4 ms per `/api/routes`
+request. Graphic Era snapped 7 m from a tertiary road, the Clock Tower 2.5 m from
+a secondary road.
+
+Verification (2026-10-20): `ctest` 5/5 pass; the map-data owner's `make test`
+(48 checks) still passes; live requests against the running server returned
+501 with `snapped` for a valid pair, 422 for a start in the hills and for
+identical points, 400 outside Dehradun, and 503 when the CSVs are missing; the
+real `web/app.js` was run in headless Edge with a stand-in API and drew 4
+routes plus 2 snapped markers, or 2 markers plus the banner on a 501.
+
+Limits: the snapped point is the nearer *end* of the nearest road, not the exact
+spot on it, so very long roads can add a detour at either end. A click is
+rejected only beyond 500 m. Routes themselves still need the routing engine.
 
 ## Files deliberately not touched (other members)
 `src/core/*`, `src/data/*`, `src/algorithms/min_heap.hpp`,

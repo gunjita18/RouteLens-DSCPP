@@ -1,6 +1,9 @@
 
 #include "../src/spatial/kdtree.hpp"
 
+// Release builds define NDEBUG, which would turn every assert below into a
+// no-op and make this test pass without checking anything.
+#undef NDEBUG
 #include <cassert>
 #include <cmath>
 #include <iostream>
