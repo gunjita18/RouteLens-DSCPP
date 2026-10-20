@@ -73,8 +73,8 @@ other members were **not modified** (see the last section).
 
 | Plan item | Status | Files |
 |---|---|---|
-| GitHub Actions CI | **New**: builds with CMake, runs `ctest` and `make test` (OSM loader), checks `web/app.js` syntax; runs on pushes to `main` and on every pull request | `.github/workflows/ci.yml` |
-| Deploy with Docker | **New**: multi-stage image (build stage with CMake and asio, slim runtime stage running as a non-root user, healthcheck on `/api/health`) | `Dockerfile`, `.dockerignore` |
+| GitHub Actions CI | **New**: builds with CMake and runs `ctest` (which now includes the OSM loader and traffic tests), checks `web/app.js` syntax, and a `docker-build` job builds the image and checks that the container answers `/api/health`; runs on pushes to `main` and on every pull request | `.github/workflows/ci.yml` |
+| Deploy with Docker | **New**: multi-stage image (build stage with CMake, asio, libcurl and cJSON, slim runtime stage running as a non-root user, healthcheck on `/api/health`) | `Dockerfile`, `.dockerignore` |
 | Server configurable for containers | **New**: `ROUTELENS_BIND` (default `127.0.0.1`) and `ROUTELENS_PORT` (default `18080`) | `src/server/main.cpp` |
 | Mobile / colour-blind polish, usability test | Mobile layout and colour-blind-safe palette started in Phase II; usability test **not started** | `web/style.css` |
 | Tests for the graph loader and traffic module | **Not started** (needs agreement with the module owner) | none |
@@ -85,12 +85,26 @@ docker build -t routelens .
 docker run --rm -p 18080:18080 routelens
 ```
 
-Verification: the Docker build was **not run** (Docker is not installed on this
-machine). Instead I built `routelens_server` from a copy containing only what the
-Dockerfile copies, checked its shared-library needs (libstdc++, libgcc, libc
-only), and ran the healthcheck command against it with the container's
-environment variables: `/api/health` and `/` both returned 200. The CI workflow
-has not run yet; its first run happens on the pull request.
+With the road network mounted:
+```bash
+docker run --rm -p 18080:18080 -v "$PWD/data/osm:/app/data/osm:ro" routelens
+```
+
+Verification (2026-10-20, Docker 29.1.3 in WSL Ubuntu 26.04):
+- The image built in 183 s and is 119 MB. It runs as a non-root user
+  (`routelens`) and Docker's own healthcheck reported `healthy`.
+- With the CSVs mounted it loaded 31,802 nodes and 72,626 edges and answered
+  `/api/routes` (501 with `snapped` info, since the routing engine is not
+  connected); the website returned 200. Without the mount it still started and
+  answered 503 for `/api/routes`.
+- **Docker build broke on `main` after the traffic module was merged**: CMake now
+  requires libcurl and cJSON (`Could NOT find CURL`), and the image's build
+  stage did not install them. Fixed by adding `libcurl4-openssl-dev` and
+  `libcjson-dev` to the build stage. The runtime stage needs no extra libraries
+  because `routelens_server` does not link the traffic library yet.
+- The new `docker-build` CI job builds the image and checks `/api/health`, so a
+  broken Dockerfile is caught on the pull request instead of at deploy time.
+  Its first run happens on the pull request for this change.
 
 ## RouteInfo and website update (agreed with Sneha)
 

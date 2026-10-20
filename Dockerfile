@@ -2,8 +2,11 @@
 #   git clone --recurse-submodules <repo>   (or: git submodule update --init)
 
 FROM ubuntu:24.04 AS build
+# libcurl and cJSON are needed because CMakeLists.txt configures the traffic
+# module for every target, even though routelens_server does not link it yet.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        cmake g++ make libasio-dev libssl-dev zlib1g-dev \
+        cmake g++ make libasio-dev libcurl4-openssl-dev libcjson-dev \
+        libssl-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY CMakeLists.txt ./
