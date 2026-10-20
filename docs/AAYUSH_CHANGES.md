@@ -196,9 +196,20 @@ not a secret) so no real key was needed or seen:
 - Same test inside the Docker image (131 MB): HTTPS worked, so the certificates
   and libraries are right; the non-root user wrote the usage file into the
   mounted volume; the key did not appear in the container log.
-- **Not verified:** a real key returning live data, because the key was not
-  available to me. Run the self-test once with your own key; expect
-  `self_test: ok` (or `no coverage`) and `source: live`.
+- **Verified with a real key** (2026-10-20, key loaded from the git-ignored
+  `.env`, never printed): a direct request returned HTTP 200; the server
+  self-test returned `ok`; `/api/traffic/status` showed `source: live`,
+  `self_test: ok`, `requests_this_run: 1`; the website badge read
+  "traffic: live" with no JavaScript errors; the daily counter persisted across
+  restarts (`requests_today: 2`). The same run inside Docker (key passed with
+  `--env-file .env`) also gave `self_test: ok`. In every case the key appeared
+  0 times in the server log, container log, status, health and website
+  responses. The server and the 7-test suite also build warning-free in a
+  fresh Release build.
+- Caveat: without `ROUTELENS_TRAFFIC_SELFTEST=1`, `source: live` only means a key
+  is configured, not that it was checked. Real fetches happen only when the
+  routing engine calls `updateRouteTraffic()`.
+- `data/cache/` (the daily-usage counter) is now git-ignored.
 
 Limits: the client's segment cache is an unbounded vector (a long-running server
 should cap it; ask the traffic owner). Traffic reaches routes only through the

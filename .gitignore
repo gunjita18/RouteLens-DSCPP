@@ -11,4 +11,6 @@ data/osm/*.csv
 # if you want teammates to skip fetching — it contains no secrets)
 data/cache/raw/
 data/cache/tiles/
+# TomTom daily-usage counter written by the server (not secret, but runtime state)
+data/cache/
 *.tmp
