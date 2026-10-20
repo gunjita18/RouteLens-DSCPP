@@ -91,15 +91,8 @@ if(NOT CJSON_INCLUDE_DIR OR NOT CJSON_LIBRARY)
     message(FATAL_ERROR "cJSON not found. Install it with: sudo apt install -y libcjson-dev")
 endif()
 
-# ---------------------------------------------------------------- road network (Sneha)
-add_library(routelens_osm STATIC
-    src/core/graph.c
-    src/data/geo.cpp
-    src/data/osm_loader.cpp
-)
-target_compile_options(routelens_osm PRIVATE -Wall -Wextra -pedantic)
-target_link_libraries(routelens_osm PUBLIC m)
-
+# ---------------------------------------------------------------- road network tools and tests (Sneha)
+# Use the routelens_osm library defined above.
 add_executable(routelens_osm_info src/app/osm_info_main.cpp)
 target_link_libraries(routelens_osm_info PRIVATE routelens_osm)
 target_compile_options(routelens_osm_info PRIVATE -Wall -Wextra -pedantic)
@@ -115,6 +108,7 @@ add_library(routelens_traffic STATIC
     src/traffic/tomtom_client.cpp
     src/traffic/eta.cpp
     src/data/http_client.cpp
+    src/data/geo.cpp
 )
 target_include_directories(routelens_traffic PUBLIC ${CJSON_INCLUDE_DIR})
 target_link_libraries(routelens_traffic PUBLIC routelens_osm CURL::libcurl ${CJSON_LIBRARY})
