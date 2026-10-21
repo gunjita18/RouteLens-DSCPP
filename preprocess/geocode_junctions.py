@@ -103,9 +103,14 @@ def main(argv=None, fetch=None, sleep=time.sleep):
             except Exception as e:
                 print(f"  {r['name']}: lookup failed ({type(e).__name__})")
                 res = []
-            if res:
-                found = (q, res[0])
+            # Accept only junction-like matches; a road, area or building gives the wrong point.
+            hit = res[0] if res else None
+            if hit and (hit.get("type") in ("junction", "traffic_signals", "crossing")
+                        or "chowk" in hit.get("name", "").lower() or "tiraha" in hit.get("name", "").lower()):
+                found = (q, hit)
                 break
+            if hit:
+                print(f"  {r['name']}: '{q}' matched {hit.get('category')}/{hit.get('type')} - not a junction, skipped")
         if not found:
             print(f"  {r['name']:<24} NOT FOUND - stays pending (add coordinates by hand if needed)")
             continue
