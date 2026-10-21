@@ -60,6 +60,7 @@ add_library(routelens_osm STATIC
     src/data/osm_loader.cpp
     src/spatial/kdtree.cpp
     src/spatial/road_snapper.cpp
+    src/algorithms/dijkstra.cpp
 )
 target_compile_options(routelens_osm PRIVATE -Wall -Wextra)
 
@@ -101,6 +102,11 @@ add_executable(test_osm tests/test_osm.cpp)
 target_link_libraries(test_osm PRIVATE routelens_osm)
 target_compile_options(test_osm PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME OsmLoaderTests COMMAND test_osm)
+# Dijkstra shortest-path tests
+add_executable(test_dijkstra tests/test_dijkstra.cpp)
+target_link_libraries(test_dijkstra PRIVATE routelens_osm)
+target_compile_options(test_dijkstra PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME DijkstraTests COMMAND test_dijkstra)
 
 # ---------------------------------------------------------------- live traffic (Sneha)
 add_library(routelens_traffic STATIC
