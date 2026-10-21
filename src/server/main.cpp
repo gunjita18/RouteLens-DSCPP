@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -9,7 +10,9 @@
 #include <string>
 
 #include "crow.h"
+#include "preview_provider.hpp"
 #include "request_params.hpp"
+#include "route_cache.hpp"
 #include "route_provider.hpp"
 #include "../data/http_client.hpp"
 #include "../data/osm_loader.hpp"
@@ -111,12 +114,23 @@ crow::response jsonError(int code, const std::string& message) {
 int main() {
     crow::SimpleApp app;
 
-    // Shared state. LRUCache is not thread-safe and Crow is multithreaded,
-    // so every cache access below is guarded by cacheMutex.
-    rl::RateLimiter trafficLimiter(5, std::chrono::seconds(1));
-    rl::LRUCache<std::string, double> trafficCache(1024);
-    std::mutex cacheMutex;
+    // Protects /api/routes (and so the TomTom quota behind it) from request
+    // floods: more than 10 requests in one second get HTTP 429.
+    rl::RateLimiter routeLimiter(10, std::chrono::seconds(1));
+    std::atomic<int> rejectedRequests{0};
+    // Route results are cached for 5 minutes (same TTL as the traffic client), so
+    // repeating a query neither recomputes routes nor spends TomTom requests.
+    rl::RouteCache routeCache(256, 300.0);
+
+    // The routing engine plugs in here. Until it exists the server answers 501.
+    // ROUTELENS_PREVIEW=1 switches on SAMPLE routes for showing the interface; they
+    // are not computed from the road network and are labelled as such everywhere.
     std::unique_ptr<rl::RouteProvider> provider = std::make_unique<rl::NullRouteProvider>();
+    const char* previewEnv = std::getenv("ROUTELENS_PREVIEW");
+    if (previewEnv != nullptr && std::string(previewEnv) == "1") {
+        provider = std::make_unique<rl::PreviewRouteProvider>();
+        CROW_LOG_WARNING << "PREVIEW MODE: /api/routes returns SAMPLE routes, not real ones";
+    }
 
     // TomTom live traffic (client owned by the traffic module). The key is read
     // only from the environment, goes only into the request URL inside the
@@ -170,6 +184,7 @@ int main() {
         crow::json::wvalue response;
         response["status"] = "ok";
         response["service"] = "RouteLens API";
+        response["preview"] = provider->isPreview();
         response["network"]["loaded"] = snapper != nullptr;
         if (snapper) {
             response["network"]["nodes"] = network.stats.keptNodes;
@@ -183,9 +198,11 @@ int main() {
         crow::json::wvalue response;
         response["source"] = trafficUsable ? "live" : "free_flow_fallback";
         response["api_key_configured"] = trafficKeyConfigured;
-        response["rate_limit"]["max_requests"] = 5;
+        // Limit on incoming /api/routes requests.
+        response["rate_limit"]["max_requests"] = 10;
         response["rate_limit"]["window_seconds"] = 1;
-        response["rate_limit"]["current_count"] = trafficLimiter.current_count();
+        response["rate_limit"]["current_count"] = routeLimiter.current_count();
+        response["rate_limit"]["rejected_total"] = rejectedRequests.load();
         {
             std::lock_guard<std::mutex> lock(tomtomMutex);
             response["tomtom"]["requests_today"] = tomtom.requestsToday();
@@ -194,14 +211,22 @@ int main() {
             response["tomtom"]["daily_cap"] = ttOptions.dailyCap;
         }
         response["tomtom"]["self_test"] = selfTestStatus;
-        std::lock_guard<std::mutex> lock(cacheMutex);
-        response["cache"]["size"] = trafficCache.size();
-        response["cache"]["capacity"] = trafficCache.capacity();
+        response["route_cache"]["size"] = routeCache.size();
+        response["route_cache"]["capacity"] = routeCache.capacity();
+        response["route_cache"]["hits"] = routeCache.hits();
+        response["route_cache"]["misses"] = routeCache.misses();
+        response["route_cache"]["ttl_seconds"] = routeCache.ttlSeconds();
         return response;
     });
 
     CROW_ROUTE(app, "/api/routes")
     ([&](const crow::request& req) {
+        if (!routeLimiter.allow_request()) {
+            ++rejectedRequests;
+            crow::response tooMany = jsonError(429, "too many requests, try again in a moment");
+            tooMany.set_header("Retry-After", "1");
+            return tooMany;
+        }
         rl::ParamGetter get = [&](const std::string& key) -> std::optional<std::string> {
             const char* v = req.url_params.get(key);
             if (!v) {
@@ -252,11 +277,24 @@ int main() {
             return jsonResponse(501, body);
         }
 
+        // Same query within 5 minutes: answer from the cache, no recomputation.
+        const std::string cacheKey = rl::RouteCache::makeKey(*parsed);
+        std::optional<std::vector<rl::RouteInfo>> routes = routeCache.get(cacheKey);
+        const bool fromCache = routes.has_value();
+        if (!routes) {
+            routes = provider->compute(*parsed);
+            if (!routes->empty()) {
+                routeCache.put(cacheKey, *routes);
+            }
+        }
+
         crow::json::wvalue out;
         out["scenario"] = parsed->scenario;
+        out["preview"] = provider->isPreview();   // true = sample routes, not real
+        out["from_cache"] = fromCache;
         addSnapped(out);
         std::size_t i = 0;
-        for (const auto& r : provider->compute(*parsed)) {
+        for (const auto& r : *routes) {
             auto& item = out["routes"][i++];
             item["name"] = r.name;
             item["eta_s"] = r.etaSeconds;
@@ -269,6 +307,9 @@ int main() {
             item["traffic"] = r.trafficLevel;
             item["score"] = r.score;
             item["recommended"] = r.recommended;
+            if (!r.explanation.empty()) {
+                item["explanation"] = r.explanation;
+            }
             std::size_t j = 0;
             for (const auto& p : r.polyline) {
                 item["polyline"][j][0] = p.first;

@@ -37,7 +37,17 @@
   map.on('click', function (e) {
     if (points.length >= 2) { return; }
     points.push({ lat: e.latlng.lat, lon: e.latlng.lng });
-    markers.push(L.marker(e.latlng).bindTooltip(points.length === 1 ? 'Start' : 'End', { permanent: true }).addTo(map));
+    var idx = points.length - 1;
+    var marker = L.marker(e.latlng, { draggable: true, title: 'Drag to move' })
+      .bindTooltip(idx === 0 ? 'Start' : 'End', { permanent: true }).addTo(map);
+    // Dragging a marker moves that point and, once both are set, recomputes the routes.
+    marker.on('dragend', function () {
+      var ll = marker.getLatLng();
+      points[idx] = { lat: ll.lat, lon: ll.lng };
+      updatePointsInfo();
+      if (points.length === 2) { findRoutes(); }
+    });
+    markers.push(marker);
     updatePointsInfo();
   });
 
@@ -89,16 +99,35 @@
     return q.toString();
   }
 
+  // Shows or hides the permanent warning used when the server returns sample routes.
+  function setPreview(on) { $('preview-banner').hidden = !on; }
+
+  function setBusy(busy) {
+    var b = $('find');
+    b.textContent = busy ? 'Finding routes…' : 'Find routes';
+    b.disabled = busy || points.length < 2;
+    $('cards').setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
+
+  var requestSeq = 0;   // only the newest request may update the page
+
   function findRoutes() {
     showBanner('');
+    var mySeq = ++requestSeq;
+    setBusy(true);
     fetch('/api/routes?' + buildQuery())
       .then(function (r) {
         return r.json().then(function (body) { return { status: r.status, body: body }; });
       })
       .then(function (res) {
+        if (mySeq !== requestSeq) { return; }   // a newer request is already running
         if (res.status === 200) {
           render(res.body.routes || []);
           drawSnapped(res.body.snapped);
+          setPreview(res.body.preview === true);
+        } else if (res.status === 429) {
+          clearRoutes();
+          showBanner('Too many requests. Wait a second and try again.');
         } else if (res.status === 501) {
           clearRoutes();
           drawSnapped(res.body.snapped);
@@ -109,8 +138,12 @@
         }
       })
       .catch(function () {
+        if (mySeq !== requestSeq) { return; }
         clearRoutes();
         showBanner('Cannot reach the RouteLens server.');
+      })
+      .then(function () {
+        if (mySeq === requestSeq) { setBusy(false); }   // always runs, success or failure
       });
   }
 
@@ -135,6 +168,8 @@
     var cards = $('cards');
     cards.replaceChildren(el('p', 'hint', 'Results appear here.'));
     if (chart) { chart.destroy(); chart = null; }
+    $('comparison-section').hidden = true;   // no empty "Comparison" heading
+    $('scenario-note').hidden = true;
   }
 
   function render(routes) {
@@ -145,6 +180,10 @@
     }
     var cards = $('cards');
     cards.replaceChildren();
+    var note = $('scenario-note');
+    note.textContent = 'Scenario: ' + (SCENARIO_LABEL[scenario] || scenario) +
+      '. The recommended route follows your priority sliders.';
+    note.hidden = false;
     var bounds = L.latLngBounds([]);
 
     routes.forEach(function (r, i) {
@@ -159,6 +198,7 @@
       if (r.recommended) { h.appendChild(el('span', 'tag', 'Recommended')); }
       card.appendChild(h);
       card.appendChild(stats(r));
+      if (r.explanation) { card.appendChild(el('p', 'explain', r.explanation)); }
       card.addEventListener('click', function () { line.openPopup(); });
       cards.appendChild(card);
     });
@@ -203,6 +243,7 @@
     var box = el('div');
     box.appendChild(el('strong', null, 'Route ' + (i + 1) + (r.recommended ? ' (recommended)' : '')));
     box.appendChild(stats(r));
+    if (r.explanation) { box.appendChild(el('p', 'explain', r.explanation)); }
     return box;
   }
 
@@ -214,6 +255,7 @@
       ['Distance (km)', function (r) { return r.distance_km; }],
       ['Major junctions', function (r) { return r.junctions; }]
     ];
+    $('comparison-section').hidden = false;   // visible before Chart.js measures the canvas
     chart = new Chart($('chart'), {
       type: 'bar',
       data: {
@@ -237,4 +279,10 @@
   }
   refreshTraffic();
   setInterval(refreshTraffic, 30000);
+
+  // If the server runs in preview mode, warn from the very first screen.
+  fetch('/api/health')
+    .then(function (r) { return r.json(); })
+    .then(function (h) { setPreview(h.preview === true); })
+    .catch(function () { /* the traffic badge already reports an offline server */ });
 })();
