@@ -53,6 +53,29 @@ target_include_directories(test_request_params PRIVATE
 target_compile_options(test_request_params PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RequestParamsTests COMMAND test_request_params)
 
+find_package(Threads REQUIRED)
+
+# Route-result cache (LRU + 5-minute expiry), including a multi-threaded check.
+add_executable(test_route_cache
+    tests/test_route_cache.cpp
+)
+target_include_directories(test_route_cache PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+)
+target_link_libraries(test_route_cache PRIVATE Threads::Threads)
+target_compile_options(test_route_cache PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RouteCacheTests COMMAND test_route_cache)
+
+# Interface-preview provider (sample routes, clearly labelled).
+add_executable(test_preview_provider
+    tests/test_preview_provider.cpp
+)
+target_include_directories(test_preview_provider PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+)
+target_compile_options(test_preview_provider PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME PreviewProviderTests COMMAND test_preview_provider)
+
 # Road network: the map-data module's graph and OSM loader, plus the KD-tree
 # road snapper that connects clicked points to it.
 add_library(routelens_osm STATIC

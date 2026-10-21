@@ -9,8 +9,8 @@ other members were **not modified** (see the last section).
 | Plan item | Status | Files |
 |---|---|---|
 | KD-tree for nearest road to a clicked point | Already done, unchanged | `src/spatial/kdtree.{hpp,cpp}`, `tests/test_kdtree.cpp` |
-| LRU cache (hash map + doubly linked list) for traffic data | Already done, unchanged | `src/traffic/lru_cache.hpp`, `tests/test_lru_cache.cpp` |
-| Queue-based rate limiter for API calls | Already done, unchanged | `src/traffic/rate_limiter.hpp`, `tests/test_rate_limiter.cpp` |
+| LRU cache (hash map + doubly linked list) for traffic data | Written and tested; now used by the server as the route-result cache with 5-minute expiry (see "Phase II completion" below) | `src/traffic/lru_cache.hpp`, `tests/test_lru_cache.cpp` |
+| Queue-based rate limiter for API calls | Written and tested; now protects `/api/routes` (see "Phase II completion" below) | `src/traffic/rate_limiter.hpp`, `tests/test_rate_limiter.cpp` |
 | Crow server + `/api/health` | Done | `src/server/main.cpp` |
 | Crow server + `/api/traffic/status` | **New** | `src/server/main.cpp` |
 | Crow server + `/api/routes` | **New**: validates input; returns real routes once a `RouteProvider` is connected, otherwise `501` | `src/server/main.cpp`, `src/server/request_params.hpp`, `src/server/route_provider.hpp` |
@@ -30,8 +30,8 @@ other members were **not modified** (see the last section).
 | Endpoint | Behaviour |
 |---|---|
 | `GET /api/health` | `{"status":"ok"}` |
-| `GET /api/traffic/status` | Source (`live` or `free_flow_fallback`, from whether `TOMTOM_API_KEY` is set), rate-limiter count, LRU cache size and capacity |
-| `GET /api/routes?from_lat&from_lon&to_lat&to_lon[&w_time&w_distance&w_signals&w_traffic][&scenario]` | `400` on bad input, `501` until the routing engine is connected, `200` with `routes[]` after |
+| `GET /api/traffic/status` | Source (`live` or `free_flow_fallback`), TomTom counters, the `/api/routes` rate-limit counters and the route-cache counters |
+| `GET /api/routes?from_lat&from_lon&to_lat&to_lon[&w_time&w_distance&w_junctions&w_traffic][&scenario]` | `400` bad input, `422` no road near a click, `429` too many requests, `503` network not loaded, `501` until the routing engine is connected, `200` with `routes[]` after |
 | `GET /`, `GET /web/<file>` | Website (rejects `..` in file names) |
 
 ### Design decisions
@@ -62,10 +62,11 @@ other members were **not modified** (see the last section).
 - ~~KD-tree not connected to the OSM graph~~: done, see "OSM road network and
   KD-tree road snapping" below.
 - The TomTom client (written by the map-data and traffic owner) is now wired
-  into the server, see "TomTom key and traffic client wiring" below. Still open:
-  my `RateLimiter` and `LRUCache` are not used by it, because the client already
-  spaces its own requests and keeps its own spatial cache; real traffic data
-  only flows once the routing engine calls `updateRouteTraffic()`.
+  into the server, see "TomTom key and traffic client wiring" below. My
+  `RateLimiter` and `LRUCache` are not used inside that client (it spaces its own
+  requests and keeps its own spatial cache); they now serve the server itself,
+  see "Phase II completion". Real traffic data only flows once the routing engine
+  calls `updateRouteTraffic()`.
 - ~~`tests/test_kdtree.cpp` unused-variable warning~~: fixed. It was a symptom
   of a real bug: Release builds define `NDEBUG`, which turned every `assert`
   in that test into a no-op, so CI would have reported it as passing without
@@ -214,6 +215,41 @@ not a secret) so no real key was needed or seen:
 Limits: the client's segment cache is an unbounded vector (a long-running server
 should cap it; ask the traffic owner). Traffic reaches routes only through the
 routing engine calling `updateRouteTraffic()`, which does not exist yet.
+
+## Phase II completion (everything that needs no teammate)
+
+| Item | What changed | Files |
+|---|---|---|
+| Draggable start/end markers (promised in the Phase 2 report) | Markers can be dragged; once both are set, routes are requested again for the new position | `web/app.js` |
+| LRU cache has a real job | `RouteCache`: route results are kept for 5 minutes, keyed by the two snapped junctions, scenario and priorities (rounded to 3 decimals). `LRUCache` has no expiry, so each entry carries its store time and counts as a miss after the time-to-live. Locked with a mutex because Crow is multithreaded. | `src/server/route_cache.hpp`, `src/server/main.cpp`, `tests/test_route_cache.cpp` |
+| Rate limiter has a real job | At most 10 `/api/routes` requests per second (global); more get `429` with `Retry-After: 1`. This protects the TomTom quota that routes will use. Counters appear in `/api/traffic/status`. | `src/server/main.cpp` |
+| Route explanation text (promised in the report) | Optional `explanation` field per route, shown on the card and in the popup when the engine supplies it | `src/server/route_provider.hpp`, `src/server/main.cpp`, `web/app.js` |
+| Interface preview mode | `ROUTELENS_PREVIEW=1` returns three **sample** routes so the whole interface can be shown before the routing engine exists. See the warning below. | `src/server/preview_provider.hpp`, `src/server/main.cpp`, `web/*`, `tests/test_preview_provider.cpp` |
+| Interface polish | "Finding routes..." indicator, only the newest request updates the page, a scenario note above the cards, the "Comparison" heading appears only when there are routes, a `429` message | `web/index.html`, `web/app.js`, `web/style.css` |
+| Build | Two new test targets (`test_route_cache`, `test_preview_provider`) | `CMakeLists.txt` |
+
+**Preview mode is not real routing.** The routes are curved lines between the two
+clicked points with made-up numbers. It is off by default and off in Docker. When
+on: every response carries `"preview": true`, `/api/health` reports it, the
+website shows a permanent red warning banner, route names end in "(sample)", all
+data is reported as 100% estimated (never live), and the server logs a warning.
+Never present its output as results. Use it only to show the interface, and say so.
+
+Verification (2026-10-21, WSL, Release build):
+- `ctest` 9/9 pass; no warnings outside the third-party Crow headers.
+- Real server, preview mode: three routes, exactly one recommended; the second
+  identical query is a cache hit, a different scenario or different priorities is
+  a miss; the priorities change which route is recommended (tested).
+- Rate limiter: of 30 simultaneous requests exactly 10 got `200` and 20 got `429`
+  with `Retry-After: 1`; the server recovered after the window.
+- Default mode: `preview` is false and no sample routes are served.
+- Website in a real browser: 0 JavaScript errors; busy indicator; preview banner
+  on load; 3 cards with explanations; comparison hidden until routes exist;
+  dragging the Start marker moved it (30.3252, 78.0222 to 30.3230, 78.0273) and
+  requested the routes again by itself; the Rain scenario changed the ETA
+  (12 to 14 min); no horizontal overflow in a 390 px wide frame.
+- **Not verified:** dragging with a finger on a real touch screen, and real routes
+  (the routing engine is not connected). The drag was simulated with mouse events.
 
 ## Files deliberately not touched (other members)
 `src/core/*`, `src/data/*`, `src/algorithms/min_heap.hpp`,
