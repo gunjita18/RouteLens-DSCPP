@@ -14,3 +14,4 @@ data/cache/tiles/
 # TomTom daily-usage counter written by the server (not secret, but runtime state)
 data/cache/
 *.tmp
+data/osm/*.html
