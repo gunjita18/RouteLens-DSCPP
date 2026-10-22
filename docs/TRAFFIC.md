@@ -186,3 +186,38 @@ once the server adds a mutex.
 - Free-flow speeds per road class (`osm_loader.cpp`) and the 30 s junction wait are provisional and will be calibrated in the ETA accuracy study.
 - A route passing within 50 m of a junction without going through it can be counted as passing it.
 - 9 junctions reported in Aug 2025 have no verified coordinates yet.
+## 13. Scenarios (`scenario.hpp`)
+
+| Scenario | Starts from | Change | TomTom requests |
+|---|---|---|---|
+| `normal` | live TomTom + free-flow | none | yes |
+| `rain` | free-flow (live ignored) | every road's speed x `rainFactor` = 0.88 | none |
+| `rush_hour` | free-flow (live ignored) | main roads x `rushMainFactor` = 0.65, others x `rushOtherFactor` = 0.85 | none |
+| `incident` | live TomTom + free-flow | chosen edges blocked, or slowed to `incidentSlowFactor` = 0.30 | yes |
+
+- `rainFactor`: FHWA Road Weather Management reports free-flow speed reductions of 6-17%
+  in heavy rain (US freeways); 0.88 is the middle. Dehradun monsoon conditions may be worse.
+- `rushMainFactor` / `rushOtherFactor`: **provisional**, to be replaced by ratios measured
+  with TomTom on Dehradun's main roads during the evening rush (a daytime run measured 0.70).
+- Rain and rush hour ignore live data so a slowdown is never counted twice.
+- Junction waits are added on scenario edges (a scenario estimate has no real waiting in it).
+- Blocked edges: `EdgeTraffic::blocked`, routing cost 1e9 in `computeCosts()`, and
+  `RouteSummary::anyBlocked` when a route uses one. Reachability (BFS) is the routing side's job
+  and can read `state.edge(e).blocked`.
+- The summary reports `scenarioShare`; `coverageLabel()` says e.g. "scenario estimate on 100% of the route".
+
+Server usage:
+
+```cpp
+rl::Scenario sc;
+if (!rl::parseScenario(scenarioText, sc)) { /* 400: unknown scenario */ }
+rl::ScenarioSettings scenarioSettings;          // defaults above
+rl::TrafficState state(osm);
+if (rl::scenarioNeedsLiveTraffic(sc))
+    rl::updateRouteTraffic(osm, state, tomtom, routeEdges, opt.rules);
+rl::Incident incident;                          // only for "incident": edges the user picked
+incident.edges = pickedEdges;
+incident.blocked = userChoseBlock;
+rl::applyScenario(state, sc, scenarioSettings, sc == rl::Scenario::Incident ? &incident : nullptr);
+auto s = rl::summarizeRoute(osm, state, routeEdges, opt.rules, 30.0, &junctions);
+```

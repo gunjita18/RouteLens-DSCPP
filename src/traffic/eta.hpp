@@ -23,9 +23,11 @@ struct RouteSummary {
     int junctions = 0;         // major junctions on the route (when a JunctionIndex is given)
     std::vector<std::string> junctionNames;   // in route order
     double liveShare = 0, historicalShare = 0, estimatedShare = 0;   // fractions of route length
+    double scenarioShare = 0;  // fraction of route length with a scenario estimate
     double meanRatio = 1.0;    // length-weighted current/free-flow over edges with data
     TrafficLevel level = TrafficLevel::Unknown;   // Unknown if no edge has data
     bool anyClosure = false;
+    bool anyBlocked = false;   // the route uses a road blocked by an incident
 };
 
 RouteSummary summarizeRoute(const OsmNetwork& net, const TrafficState& state, const std::vector<int>& routeEdges,

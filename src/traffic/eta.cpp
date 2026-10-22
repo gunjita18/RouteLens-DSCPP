@@ -12,7 +12,7 @@ RouteSummary summarizeRoute(const OsmNetwork& net, const TrafficState& state, co
     RouteSummary s;
     std::vector<char> seenJ(junctions ? junctions->junctions.size() : 0, 0);
     std::set<long long> signals;
-    double live = 0, hist = 0, est = 0, ratioWeighted = 0;
+    double live = 0, hist = 0, est = 0, scen = 0, ratioWeighted = 0;
     for (int e : routeEdges) {
         if (e < 0 || e >= net.graph->edge_count) continue;
         const Edge& ge = net.graph->edges[e];
@@ -31,8 +31,13 @@ RouteSummary summarizeRoute(const OsmNetwork& net, const TrafficState& state, co
         s.distanceM += ge.distance_m;
         s.freeFlowS += ge.duration_s + signalWait;
         if (t.source == DataSource::FreeFlow) {
-            s.etaS += ge.duration_s + signalWait;
+            s.etaS += t.durationS + signalWait;   // equals the free-flow time for free-flow edges
             est += ge.distance_m;
+        } else if (t.source == DataSource::Scenario) {
+            s.etaS += t.durationS + signalWait;   // what-if estimate: no real waits inside, so add them
+            scen += ge.distance_m;
+            ratioWeighted += t.ratio * ge.distance_m;
+            if (t.blocked) s.anyBlocked = true;
         } else {
             s.etaS += t.durationS;   // TomTom speed already includes signal waits
             (t.source == DataSource::Live ? live : hist) += ge.distance_m;
@@ -46,9 +51,10 @@ RouteSummary summarizeRoute(const OsmNetwork& net, const TrafficState& state, co
         s.liveShare = live / s.distanceM;
         s.historicalShare = hist / s.distanceM;
         s.estimatedShare = est / s.distanceM;
+        s.scenarioShare = scen / s.distanceM;
     }
-    if (live + hist > 0) {
-        s.meanRatio = ratioWeighted / (live + hist);
+    if (live + hist + scen > 0) {
+        s.meanRatio = ratioWeighted / (live + hist + scen);
         s.level = levelForRatio(s.meanRatio, rules);
     }
     return s;
@@ -72,6 +78,11 @@ std::string formatDistance(double meters) {
 
 std::string coverageLabel(const RouteSummary& s) {
     auto pct = [](double f) { return std::to_string((int)std::lround(f * 100)) + "%"; };
+    if (s.scenarioShare > 0) {
+        std::string out = "scenario estimate on " + pct(s.scenarioShare) + " of the route";
+        if (s.liveShare + s.historicalShare > 0) out += ", live/typical data on " + pct(s.liveShare + s.historicalShare);
+        return out;
+    }
     if (s.liveShare + s.historicalShare <= 0) return "no traffic data on this route: ETA is an estimate";
     return "live on " + pct(s.liveShare) + " of the route, typical on " + pct(s.historicalShare) +
            ", estimated on " + pct(s.estimatedShare);
