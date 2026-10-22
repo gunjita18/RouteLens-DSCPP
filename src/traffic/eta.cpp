@@ -7,8 +7,10 @@
 namespace rl {
 
 RouteSummary summarizeRoute(const OsmNetwork& net, const TrafficState& state, const std::vector<int>& routeEdges,
-                            const TrafficRules& rules, double signalDelayS) {
+                            const TrafficRules& rules, double signalDelayS,
+                            const JunctionIndex* junctions) {
     RouteSummary s;
+    std::vector<char> seenJ(junctions ? junctions->junctions.size() : 0, 0);
     std::set<long long> signals;
     double live = 0, hist = 0, est = 0, ratioWeighted = 0;
     for (int e : routeEdges) {
@@ -17,7 +19,15 @@ RouteSummary summarizeRoute(const OsmNetwork& net, const TrafficState& state, co
         const EdgeTraffic& t = state.edge(e);
         for (int i = 0; i < ge.signal_count; i++) signals.insert(ge.signal_ids[i]);
 
-        double signalWait = signalDelayS * ge.signal_count;
+        double signalWait;
+        if (junctions) {   // documented major junction at the end of this edge, counted once per route
+            int j = junctions->junctionOf(ge.to);
+            bool first = j >= 0 && !seenJ[j];
+            signalWait = first ? signalDelayS : 0.0;
+            if (first) { seenJ[j] = 1; s.junctionNames.push_back(junctions->junctions[j].name); }
+        } else {
+            signalWait = signalDelayS * ge.signal_count;
+        }
         s.distanceM += ge.distance_m;
         s.freeFlowS += ge.duration_s + signalWait;
         if (t.source == DataSource::FreeFlow) {
@@ -31,6 +41,7 @@ RouteSummary summarizeRoute(const OsmNetwork& net, const TrafficState& state, co
         }
     }
     s.signals = (int)signals.size();
+    s.junctions = (int)s.junctionNames.size();
     if (s.distanceM > 0) {
         s.liveShare = live / s.distanceM;
         s.historicalShare = hist / s.distanceM;

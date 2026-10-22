@@ -130,6 +130,7 @@ add_library(routelens_traffic STATIC
     src/traffic/traffic.cpp
     src/traffic/tomtom_client.cpp
     src/traffic/eta.cpp
+    src/traffic/junctions.cpp
     src/data/http_client.cpp
     src/data/geo.cpp
 )
@@ -141,3 +142,13 @@ add_executable(test_traffic tests/test_traffic.cpp)
 target_link_libraries(test_traffic PRIVATE routelens_traffic)
 target_compile_options(test_traffic PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME TrafficTests COMMAND test_traffic)
+
+# ---------------------------------------------------------------- major junctions (Sneha)
+add_executable(routelens_junctions_info src/app/junctions_info_main.cpp)
+target_link_libraries(routelens_junctions_info PRIVATE routelens_traffic)
+target_compile_options(routelens_junctions_info PRIVATE -Wall -Wextra -pedantic)
+
+add_executable(test_junctions tests/test_junctions.cpp)
+target_link_libraries(test_junctions PRIVATE routelens_traffic)
+target_compile_options(test_junctions PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME JunctionTests COMMAND test_junctions)
