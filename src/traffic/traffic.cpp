@@ -66,6 +66,7 @@ const char* sourceName(DataSource s) {
     switch (s) {
         case DataSource::Live: return "live";
         case DataSource::Historical: return "typical for this time";
+        case DataSource::Scenario: return "scenario estimate";
         default: return "estimated (free-flow)";
     }
 }
@@ -191,6 +192,7 @@ int TrafficState::applySegment(const FlowSegment& seg, const TrafficRules& r, co
 void TrafficState::computeCosts(const Weights& w, std::vector<double>& out) const {
     out.resize(edges_.size());
     for (size_t e = 0; e < edges_.size(); e++) {
+        if (edges_[e].blocked) { out[e] = 1e9; continue; }   // blocked by an incident: avoid
         const Edge& ge = net_.graph->edges[e];
         double min = edges_[e].durationS / 60.0;
         out[e] = w.per_km * ge.distance_m / 1000.0 + w.per_minute * min +

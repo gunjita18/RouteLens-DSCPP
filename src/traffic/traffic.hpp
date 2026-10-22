@@ -19,7 +19,7 @@
 namespace rl {
 
 enum class TrafficLevel { Low, Medium, High, Unknown };
-enum class DataSource { FreeFlow, Historical, Live };
+enum class DataSource { FreeFlow, Historical, Live, Scenario };   // Scenario: what-if estimate
 
 struct TrafficRules {
     double maxSnapM = 50.0;            // TomTom answer for a road farther than this: not our road
@@ -67,6 +67,7 @@ struct EdgeTraffic {
     double confidence = 0.0;
     double durationS = 0.0;      // travel time to use: live/historical if matched, else free-flow
     bool closed = false;
+    bool blocked = false;        // incident scenario: road closed, routing must avoid it
 };
 
 class TrafficState {
@@ -81,6 +82,11 @@ public:
     const EdgeTraffic& edge(int e) const { return edges_[e]; }
     int directionRejections() const { return directionRejected_; }
     void reset();
+
+    // Used by scenario.cpp: direct access to one edge and to the network.
+    EdgeTraffic& mutableEdge(int e) { return edges_[e]; }
+    OsmNetwork& network() { return net_; }
+    int edgeCount() const { return (int)edges_.size(); }
 
     // Edge costs like graph_compute_costs(), but with live/historical travel times.
     void computeCosts(const Weights& w, std::vector<double>& out) const;
