@@ -2,7 +2,8 @@
 // guardrails needed for the free "Freemium" plan (2,500 non-tile requests/day):
 //
 //   * segment cache: a point on a segment fetched in the last cacheTtlS seconds
-//     is answered from memory (one Rajpur Road answer covers ~20 km)
+//     is answered from memory (one Rajpur Road answer covers ~20 km); at most
+//     maxCachedSegments are kept, the least recently used is evicted (LRUCache)
 //   * "no coverage" cache: points TomTom has no road for are not asked again
 //   * daily counter stored in a file, with our own hard stop (dailyCap)
 //   * rate limit: at most one request per minIntervalS (TomTom: 5 per second)
@@ -13,10 +14,13 @@
 // The API key is put into request URLs only; it never appears in messages.
 #pragma once
 #include <functional>
+#include <memory>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
 #include "../data/http_client.hpp"
+#include "lru_cache.hpp"
 #include "traffic.hpp"
 
 namespace rl {
@@ -45,6 +49,7 @@ struct TomTomOptions {
     double cacheTtlS = 300.0;        // 5 minutes
     std::string usageFile = "data/cache/tomtom_usage.txt";
     int maxConsecutiveFailures = 3;  // then assume an outage and stop asking
+    int maxCachedSegments = 200;     // cache size; least recently used segment evicted first
     TrafficRules rules;
 };
 
@@ -66,7 +71,10 @@ public:
 
     FetchResult fetch(LatLon p);
 
-    const FlowSegment& segment(int i) const { return cache_[i].seg; }
+    // The segment of a result with hasSegment(status). Valid until the next fetch().
+    const FlowSegment& segment(int id) const { return index_.at(id).ptr->seg; }
+    int cachedSegments() const { return (int)index_.size(); }
+    int cachedMisses() const { return (int)misses_.size(); }
     int requestsToday() const { return usedToday_; }
     int requestsThisRun() const { return requestsThisRun_; }
     int cacheHits() const { return cacheHits_; }
@@ -78,13 +86,18 @@ private:
     void loadUsage();
     void saveUsage() const;
     std::string buildUrl(LatLon p) const;
+    void pruneIndex();
+    void addMiss(LatLon p, double now);
 
     TomTomOptions opt_;
     FetchFn fetch_;
     ClockFn clock_;
     SleepFn sleep_;
     TodayFn today_;
-    std::vector<CachedSegment> cache_;
+    struct IndexEntry { BBox box; std::shared_ptr<const CachedSegment> ptr; };
+    LRUCache<int, std::shared_ptr<const CachedSegment>> lru_;   // decides what is evicted
+    std::unordered_map<int, IndexEntry> index_;                 // spatial lookup, mirrors lru_
+    int nextId_ = 0;
     std::vector<CachedMiss> misses_;
     std::string usageDate_;
     int usedToday_ = 0;

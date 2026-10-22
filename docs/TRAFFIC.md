@@ -74,10 +74,11 @@ charge without a card), about 5 requests per second.
 | `cacheTtlS` | 300 s | A point within `maxSnapM` of a segment fetched in the last 5 minutes is answered from memory. Segments are cached even when they were too far from the point that fetched them (they are valid data for their own road). "No coverage" points are cached too. |
 | `dailyCap` | 2000 | Own hard stop below TomTom's 2,500. Counted per local date in `usageFile` (`data/cache/tomtom_usage.txt`, format `YYYY-MM-DD N`); survives restarts; every request counts, including failed ones. |
 | `minIntervalS` | 0.25 s | At most 4 requests per second |
+| `maxCachedSegments` | 200 | Segment cache size. When full, the least recently used segment is evicted (Aayush's `LRUCache`). No-coverage points are capped at the same number. |
 | `maxConsecutiveFailures` | 3 | After 3 network or 5xx failures in a row, the client stops asking for the rest of the run (outage) |
 
-Known gap: the segment cache has no size limit. Fine for a demo; for a
-long-running server it should be bounded (planned: Aayush's `LRUCache`).
+The segment cache is bounded (`maxCachedSegments`), so a long-running server does not
+grow without limit. A segment returned by `fetch()` stays valid until the next `fetch()`.
 
 ## 6. Fetch results (`FetchStatus`)
 
