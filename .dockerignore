@@ -1,7 +1,8 @@
 .git
 build/
 bin/
-data/
+data/*
+!data/junctions
 docs/
 external/Crow/docs/
 external/Crow/tests/

@@ -80,7 +80,7 @@ other members were **not modified** (see the last section).
 | Deploy with Docker | **New**: multi-stage image (build stage with CMake, asio, libcurl and cJSON, slim runtime stage running as a non-root user, healthcheck on `/api/health`) | `Dockerfile`, `.dockerignore` |
 | Server configurable for containers | **New**: `ROUTELENS_BIND` (default `127.0.0.1`) and `ROUTELENS_PORT` (default `18080`) | `src/server/main.cpp` |
 | Mobile / colour-blind polish, usability test | Mobile layout and colour-blind-safe palette started in Phase II; usability test **not started** | `web/style.css` |
-| Tests for the graph loader and traffic module | **Not started** (needs agreement with the module owner) | none |
+| Tests for the graph loader and traffic module | **Done by the module owner** (Sneha): OSM loader, traffic, junction, scenario and TomTom-cache tests, all run by `ctest` and CI | `tests/test_osm.cpp`, `tests/test_traffic.cpp`, `tests/test_junctions.cpp`, `tests/test_scenarios.cpp`, `tests/test_tomtom_cache.cpp` |
 
 Run with Docker (clone with `--recurse-submodules`):
 ```bash
@@ -212,9 +212,10 @@ not a secret) so no real key was needed or seen:
   routing engine calls `updateRouteTraffic()`.
 - `data/cache/` (the daily-usage counter) is now git-ignored.
 
-Limits: the client's segment cache is an unbounded vector (a long-running server
-should cap it; ask the traffic owner). Traffic reaches routes only through the
-routing engine calling `updateRouteTraffic()`, which does not exist yet.
+Limits: traffic reaches routes only through the routing engine calling
+`updateRouteTraffic()`, which does not exist yet. (The client's segment cache
+was unbounded; the traffic owner has since capped it at 200 segments with my
+`LRUCache`, PR #15.)
 
 ## Phase II completion (everything that needs no teammate)
 
@@ -250,6 +251,33 @@ Verification (2026-10-21, WSL, Release build):
   (12 to 14 min); no horizontal overflow in a 390 px wide frame.
 - **Not verified:** dragging with a finger on a real touch screen, and real routes
   (the routing engine is not connected). The drag was simulated with mouse events.
+
+## Server ready for the traffic module's junctions and scenarios (2026-10-25)
+
+After Sneha's junction and scenario work was merged (PRs #12-#15), the server
+side was brought in line with it. Her modules are only called, not modified.
+
+| Item | What changed | Files |
+|---|---|---|
+| Major junctions loaded at startup | The server loads `data/junctions/major_junctions.csv` (override with `ROUTELENS_JUNCTIONS_FILE`) and snaps it onto the road network with a 50 m radius, as `docs/TRAFFIC.md` section 10 describes. Loaded once, then only read, so requests share it without a lock. The routing engine only has to pass `&junctions` to `rl::summarizeRoute()` to count junctions per route. Without the file the server still starts and logs a warning. | `src/server/main.cpp` |
+| `/api/health` reports junctions | New `junctions` block: `loaded`, `count`, `snapped`, `pending` (rows without coordinates) | `src/server/main.cpp` |
+| Rate-limit numbers in one place | The limit (10 requests per 1 s) is a named constant used both by the limiter and by `/api/traffic/status`, so the two cannot disagree | `src/server/main.cpp` |
+| Preview scenarios use the traffic module's factors | Sample ETAs for rain (speed x 0.88) and rush hour (main roads x 0.65, others x 0.85, mixed by a sample main-road share per route) now follow the defaults of `rl::ScenarioSettings` instead of my own guesses (1.15 and 1.3). Incident stays a sample slowdown, since the real one needs edges chosen by the user. A test checks the factors against `ScenarioSettings`, so a change there is noticed. | `src/server/preview_provider.hpp`, `tests/test_preview_provider.cpp` |
+| Docker image includes the junction list | The 13 KB CSV is in git, so it is copied into the image (`.dockerignore` now lets `data/junctions` through; the road-network CSVs stay out and are still mounted) | `Dockerfile`, `.dockerignore` |
+| Stale comment | The Dockerfile no longer says the server does not link the traffic module | `Dockerfile` |
+
+Verification (2026-10-25, WSL, Release build):
+- `ctest` 12/12 pass; preview test 14 checks, 0 failures; no compiler warnings
+  outside third-party code.
+- Real server: `/api/health` reported 41 junctions, 41 snapped, 9 pending; the
+  log says "41 of 41 snapped onto the road network". With a missing file it
+  reported `"loaded": false`, logged a warning and kept serving.
+- Preview mode, Clock Tower to ISBT: rain made every sample ETA 1/0.88 = 1.136
+  times longer; rush hour 1.29 to 1.47 times longer depending on the route.
+- Docker: the image built; with the road network mounted the container loaded
+  41 of 41 junctions from `/app/data/junctions/major_junctions.csv`, and
+  `/api/health` reported them.
+- **Not verified:** junction counts on real routes (needs the routing engine).
 
 ## Files deliberately not touched (other members)
 `src/core/*`, `src/data/*`, `src/algorithms/min_heap.hpp`,

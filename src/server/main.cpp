@@ -17,6 +17,7 @@
 #include "../data/http_client.hpp"
 #include "../data/osm_loader.hpp"
 #include "../spatial/road_snapper.hpp"
+#include "../traffic/junctions.hpp"
 #include "../traffic/lru_cache.hpp"
 #include "../traffic/rate_limiter.hpp"
 #include "../traffic/tomtom_client.hpp"
@@ -35,6 +36,12 @@ std::string dataDir() {
     return d ? d : "data/osm";
 }
 
+// Major-junction list (override with ROUTELENS_JUNCTIONS_FILE).
+std::string junctionsFile() {
+    const char* f = std::getenv("ROUTELENS_JUNCTIONS_FILE");
+    return f ? f : "data/junctions/major_junctions.csv";
+}
+
 // Directory for the TomTom daily-usage counter (override with ROUTELENS_CACHE_DIR).
 // It must be writable; in Docker mount a volume there to keep the count across restarts.
 std::string cacheDir() {
@@ -44,6 +51,10 @@ std::string cacheDir() {
 
 // A click farther than this from any road is rejected.
 constexpr double kMaxSnapMeters = 500.0;
+
+// A major junction claims every graph node within this distance (the radius
+// docs/TRAFFIC.md gives for the server; 41 of 41 junctions snap with it).
+constexpr double kJunctionRadiusMeters = 50.0;
 
 // Bind address and port. Defaults keep the server local-only; the Docker image
 // sets ROUTELENS_BIND=0.0.0.0 so the container port can be published.
@@ -116,7 +127,9 @@ int main() {
 
     // Protects /api/routes (and so the TomTom quota behind it) from request
     // floods: more than 10 requests in one second get HTTP 429.
-    rl::RateLimiter routeLimiter(10, std::chrono::seconds(1));
+    constexpr int kRouteRequestsPerWindow = 10;
+    constexpr int kRouteWindowSeconds = 1;
+    rl::RateLimiter routeLimiter(kRouteRequestsPerWindow, std::chrono::seconds(kRouteWindowSeconds));
     std::atomic<int> rejectedRequests{0};
     // Route results are cached for 5 minutes (same TTL as the traffic client), so
     // repeating a query neither recomputes routes nor spends TomTom requests.
@@ -179,6 +192,26 @@ int main() {
         }
     }
 
+    // Major junctions (list owned by the traffic module), snapped onto the road
+    // network once at startup and only read afterwards, so requests can share it
+    // without a lock. The routing engine passes it to rl::summarizeRoute() to
+    // count the junctions on each route. Without the file the server still runs.
+    rl::JunctionIndex junctions;
+    bool junctionsLoaded = false;
+    if (snapper) {
+        std::string jErr;
+        const std::string file = junctionsFile();
+        junctionsLoaded = rl::loadJunctions(file, network, kJunctionRadiusMeters, junctions, jErr);
+        if (junctionsLoaded) {
+            CROW_LOG_INFO << "major junctions loaded from " << file << ": "
+                          << junctions.junctions.size() - junctions.unsnapped << " of "
+                          << junctions.junctions.size() << " snapped onto the road network, "
+                          << junctions.skippedNoCoords << " pending (no coordinates)";
+        } else {
+            CROW_LOG_WARNING << "major junctions NOT loaded from " << file << ": " << jErr;
+        }
+    }
+
     CROW_ROUTE(app, "/api/health")
     ([&] {
         crow::json::wvalue response;
@@ -190,6 +223,12 @@ int main() {
             response["network"]["nodes"] = network.stats.keptNodes;
             response["network"]["edges"] = network.stats.keptEdges;
         }
+        response["junctions"]["loaded"] = junctionsLoaded;
+        if (junctionsLoaded) {
+            response["junctions"]["count"] = static_cast<int>(junctions.junctions.size());
+            response["junctions"]["snapped"] = static_cast<int>(junctions.junctions.size()) - junctions.unsnapped;
+            response["junctions"]["pending"] = junctions.skippedNoCoords;
+        }
         return response;
     });
 
@@ -199,8 +238,8 @@ int main() {
         response["source"] = trafficUsable ? "live" : "free_flow_fallback";
         response["api_key_configured"] = trafficKeyConfigured;
         // Limit on incoming /api/routes requests.
-        response["rate_limit"]["max_requests"] = 10;
-        response["rate_limit"]["window_seconds"] = 1;
+        response["rate_limit"]["max_requests"] = kRouteRequestsPerWindow;
+        response["rate_limit"]["window_seconds"] = kRouteWindowSeconds;
         response["rate_limit"]["current_count"] = routeLimiter.current_count();
         response["rate_limit"]["rejected_total"] = rejectedRequests.load();
         {

@@ -2,8 +2,8 @@
 #   git clone --recurse-submodules <repo>   (or: git submodule update --init)
 
 FROM ubuntu:24.04 AS build
-# libcurl and cJSON are needed because CMakeLists.txt configures the traffic
-# module for every target, even though routelens_server does not link it yet.
+# libcurl and cJSON are needed by the traffic module, which routelens_server links
+# (TomTom client, major junctions).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake g++ make libasio-dev libcurl4-openssl-dev libcjson-dev \
         libssl-dev zlib1g-dev \
@@ -27,6 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=build /src/build/routelens_server /app/routelens_server
 COPY web /app/web
+# The major-junction list is small and in git, so it is part of the image.
+COPY data/junctions/major_junctions.csv /app/data/junctions/major_junctions.csv
 USER routelens
 # The road network CSVs are not in git or in the image. Mount them. The TomTom
 # key is never in the image either: pass it at run time, and keep the daily
@@ -37,6 +39,7 @@ ENV ROUTELENS_BIND=0.0.0.0 \
     ROUTELENS_PORT=18080 \
     ROUTELENS_WEB_DIR=/app/web \
     ROUTELENS_DATA_DIR=/app/data/osm \
+    ROUTELENS_JUNCTIONS_FILE=/app/data/junctions/major_junctions.csv \
     ROUTELENS_CACHE_DIR=/var/lib/routelens
 EXPOSE 18080
 HEALTHCHECK --interval=30s --timeout=3s CMD ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${ROUTELENS_PORT} && printf 'GET /api/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q 200 <&3"]
