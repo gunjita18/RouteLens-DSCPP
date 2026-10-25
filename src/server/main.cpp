@@ -11,6 +11,7 @@
 #include "crow.h"
 #include "request_params.hpp"
 #include "route_provider.hpp"
+#include "osm_route_provider.hpp"
 #include "../data/http_client.hpp"
 #include "../data/osm_loader.hpp"
 #include "../spatial/road_snapper.hpp"
@@ -116,7 +117,7 @@ int main() {
     rl::RateLimiter trafficLimiter(5, std::chrono::seconds(1));
     rl::LRUCache<std::string, double> trafficCache(1024);
     std::mutex cacheMutex;
-    std::unique_ptr<rl::RouteProvider> provider = std::make_unique<rl::NullRouteProvider>();
+
 
     // TomTom live traffic (client owned by the traffic module). The key is read
     // only from the environment, goes only into the request URL inside the
@@ -165,7 +166,17 @@ int main() {
         }
     }
 
-    CROW_ROUTE(app, "/api/health")
+    // Connect routing only after the OSM network has loaded.
+   std::unique_ptr<rl::RouteProvider> provider;
+   if (snapper && network.graph) {
+       provider = std::make_unique<rl::OsmRouteProvider>(network);
+       CROW_LOG_INFO << "OSM routing provider: "
+                     << (provider->available() ? "ready" : "unavailable");
+   } else {
+       provider = std::make_unique<rl::NullRouteProvider>();
+   }
+
+   CROW_ROUTE(app, "/api/health")
     ([&] {
         crow::json::wvalue response;
         response["status"] = "ok";

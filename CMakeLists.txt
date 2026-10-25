@@ -58,9 +58,13 @@ add_test(NAME RequestParamsTests COMMAND test_request_params)
 add_library(routelens_osm STATIC
     src/core/graph.c
     src/data/osm_loader.cpp
+    src/data/geo.cpp
     src/spatial/kdtree.cpp
     src/spatial/road_snapper.cpp
     src/algorithms/dijkstra.cpp
+    src/algorithms/astar.cpp
+    src/algorithms/yen.cpp
+    src/algorithms/route_ranking.cpp
 )
 target_compile_options(routelens_osm PRIVATE -Wall -Wextra)
 
@@ -79,6 +83,7 @@ add_test(NAME RoadSnapperTests COMMAND test_road_snapper
 
 add_executable(routelens_server
     src/server/main.cpp
+    src/server/osm_route_provider.cpp
 )
 target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
@@ -107,7 +112,21 @@ add_executable(test_dijkstra tests/test_dijkstra.cpp)
 target_link_libraries(test_dijkstra PRIVATE routelens_osm)
 target_compile_options(test_dijkstra PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME DijkstraTests COMMAND test_dijkstra)
-
+# A* shortest-path tests
+add_executable(test_astar tests/test_astar.cpp)
+target_link_libraries(test_astar PRIVATE routelens_osm)
+target_compile_options(test_astar PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME AStarTests COMMAND test_astar)
+# Yen's K-shortest loopless paths tests
+add_executable(test_yen tests/test_yen.cpp)
+target_link_libraries(test_yen PRIVATE routelens_osm)
+target_compile_options(test_yen PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME YenTests COMMAND test_yen)
+# Pareto filtering and route ranking tests
+add_executable(test_route_ranking tests/test_route_ranking.cpp)
+target_link_libraries(test_route_ranking PRIVATE routelens_osm)
+target_compile_options(test_route_ranking PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RouteRankingTests COMMAND test_route_ranking)
 # ---------------------------------------------------------------- live traffic (Sneha)
 add_library(routelens_traffic STATIC
     src/traffic/traffic.cpp
