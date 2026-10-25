@@ -219,3 +219,16 @@ add_executable(test_tomtom_cache tests/test_tomtom_cache.cpp)
 target_link_libraries(test_tomtom_cache PRIVATE routelens_traffic)
 target_compile_options(test_tomtom_cache PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME TomTomCacheTests COMMAND test_tomtom_cache)
+
+# ---------------------------------------------------------------- keep assert() in tests
+# The tests check results with assert(). A Release build defines NDEBUG, which
+# compiles every assert away: the tests would then pass without checking
+# anything (CI builds Release), or crash where an assert wraps a call that the
+# test needs. Keep asserts on for all test targets; library code is unaffected.
+# Keep this block after the last test target.
+get_directory_property(_rl_all_targets BUILDSYSTEM_TARGETS)
+foreach(_rl_target IN LISTS _rl_all_targets)
+    if(_rl_target MATCHES "^test_")
+        target_compile_options(${_rl_target} PRIVATE -UNDEBUG)
+    endif()
+endforeach()
