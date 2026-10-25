@@ -81,8 +81,15 @@ add_test(NAME PreviewProviderTests COMMAND test_preview_provider)
 add_library(routelens_osm STATIC
     src/core/graph.c
     src/data/osm_loader.cpp
+    src/data/geo.cpp
     src/spatial/kdtree.cpp
     src/spatial/road_snapper.cpp
+    src/algorithms/dijkstra.cpp
+    src/algorithms/astar.cpp
+    src/algorithms/yen.cpp
+    src/algorithms/penalty.cpp
+    src/algorithms/scenario.cpp
+    src/algorithms/route_ranking.cpp
 )
 target_compile_options(routelens_osm PRIVATE -Wall -Wextra)
 
@@ -101,6 +108,7 @@ add_test(NAME RoadSnapperTests COMMAND test_road_snapper
 
 add_executable(routelens_server
     src/server/main.cpp
+    src/server/osm_route_provider.cpp
 )
 target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
@@ -124,7 +132,53 @@ add_executable(test_osm tests/test_osm.cpp)
 target_link_libraries(test_osm PRIVATE routelens_osm)
 target_compile_options(test_osm PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME OsmLoaderTests COMMAND test_osm)
-
+# Dijkstra shortest-path tests
+add_executable(test_dijkstra tests/test_dijkstra.cpp)
+target_link_libraries(test_dijkstra PRIVATE routelens_osm)
+target_compile_options(test_dijkstra PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME DijkstraTests COMMAND test_dijkstra)
+# A* shortest-path tests
+add_executable(test_astar tests/test_astar.cpp)
+target_link_libraries(test_astar PRIVATE routelens_osm)
+target_compile_options(test_astar PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME AStarTests COMMAND test_astar)
+# A* heuristic: same optimal cost as Dijkstra on random graphs, fewer expansions
+add_executable(test_astar_heuristic tests/test_astar_heuristic.cpp)
+target_link_libraries(test_astar_heuristic PRIVATE routelens_osm)
+target_compile_options(test_astar_heuristic PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME AStarHeuristicTests COMMAND test_astar_heuristic)
+# Penalty-method alternative routes
+add_executable(test_penalty tests/test_penalty.cpp)
+target_link_libraries(test_penalty PRIVATE routelens_osm)
+target_compile_options(test_penalty PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME PenaltyTests COMMAND test_penalty)
+# What-if scenario mode: closures, slowdowns, BFS reachability
+add_executable(test_scenario tests/test_scenario.cpp)
+target_link_libraries(test_scenario PRIVATE routelens_osm)
+target_compile_options(test_scenario PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME ClosureTests COMMAND test_scenario)
+# Route provider: penalty + Yen candidates, blocked and slowed roads
+add_executable(test_route_provider
+    tests/test_route_provider.cpp
+    src/server/osm_route_provider.cpp
+)
+target_link_libraries(test_route_provider PRIVATE routelens_osm)
+target_compile_options(test_route_provider PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RouteProviderTests COMMAND test_route_provider)
+# Algorithm evaluation harness (see evaluation/run_evaluation.sh)
+add_executable(routelens_eval src/app/eval_main.cpp)
+target_link_libraries(routelens_eval PRIVATE routelens_osm)
+target_compile_options(routelens_eval PRIVATE -Wall -Wextra -pedantic)
+# Yen's K-shortest loopless paths tests
+add_executable(test_yen tests/test_yen.cpp)
+target_link_libraries(test_yen PRIVATE routelens_osm)
+target_compile_options(test_yen PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME YenTests COMMAND test_yen)
+# Pareto filtering and route ranking tests
+add_executable(test_route_ranking tests/test_route_ranking.cpp)
+target_link_libraries(test_route_ranking PRIVATE routelens_osm)
+target_compile_options(test_route_ranking PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RouteRankingTests COMMAND test_route_ranking)
 # ---------------------------------------------------------------- live traffic (Sneha)
 add_library(routelens_traffic STATIC
     src/traffic/traffic.cpp
@@ -165,3 +219,16 @@ add_executable(test_tomtom_cache tests/test_tomtom_cache.cpp)
 target_link_libraries(test_tomtom_cache PRIVATE routelens_traffic)
 target_compile_options(test_tomtom_cache PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME TomTomCacheTests COMMAND test_tomtom_cache)
+
+# ---------------------------------------------------------------- keep assert() in tests
+# The tests check results with assert(). A Release build defines NDEBUG, which
+# compiles every assert away: the tests would then pass without checking
+# anything (CI builds Release), or crash where an assert wraps a call that the
+# test needs. Keep asserts on for all test targets; library code is unaffected.
+# Keep this block after the last test target.
+get_directory_property(_rl_all_targets BUILDSYSTEM_TARGETS)
+foreach(_rl_target IN LISTS _rl_all_targets)
+    if(_rl_target MATCHES "^test_")
+        target_compile_options(${_rl_target} PRIVATE -UNDEBUG)
+    endif()
+endforeach()

@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -14,6 +16,8 @@
 #include "request_params.hpp"
 #include "route_cache.hpp"
 #include "route_provider.hpp"
+#include "osm_route_provider.hpp"
+#include "../algorithms/scenario.hpp"
 #include "../data/http_client.hpp"
 #include "../data/osm_loader.hpp"
 #include "../spatial/road_snapper.hpp"
@@ -109,6 +113,119 @@ crow::response jsonError(int code, const std::string& message) {
     return jsonResponse(code, body);
 }
 
+// Writes the route cards and map polylines shared by /api/routes and /api/scenario.
+void putRoutes(crow::json::wvalue& out, const std::vector<rl::RouteInfo>& routes) {
+    std::size_t i = 0;
+    for (const auto& r : routes) {
+        auto& item = out["routes"][i++];
+        item["name"] = r.name;
+        item["eta_s"] = r.etaSeconds;
+        item["free_flow_eta_s"] = r.freeFlowEtaSeconds;
+        item["distance_km"] = r.distanceKm;
+        item["junctions"] = r.junctions;
+        item["coverage"]["live_pct"] = r.livePct;
+        item["coverage"]["typical_pct"] = r.typicalPct;
+        item["coverage"]["estimated_pct"] = r.estimatedPct;
+        item["traffic"] = r.trafficLevel;
+        item["score"] = r.score;
+        item["recommended"] = r.recommended;
+        if (!r.explanation.empty()) {
+            item["explanation"] = r.explanation;
+        }
+        std::size_t j = 0;
+        for (const auto& p : r.polyline) {
+            item["polyline"][j][0] = p.first;
+            item["polyline"][j][1] = p.second;
+            ++j;
+        }
+    }
+}
+
+constexpr std::size_t kMaxClosures = 20;
+constexpr double kMinClosureRadiusM = 20.0;
+constexpr double kMaxClosureRadiusM = 2000.0;
+constexpr double kDefaultClosureRadiusM = 150.0;
+constexpr double kMinSlowFactor = 1.1;
+constexpr double kMaxSlowFactor = 20.0;
+constexpr double kDefaultSlowFactor = 3.0;
+
+// Reads body["closures"] into `out`. Returns false and sets err on bad input.
+bool parseClosures(const crow::json::rvalue& body, std::vector<rl::Closure>& out,
+                   std::string& err) {
+    if (!body.has("closures") || body["closures"].t() != crow::json::type::List) {
+        err = "closures must be a list of {lat, lon} objects";
+        return false;
+    }
+    const auto& list = body["closures"];
+    if (list.size() == 0 || list.size() > kMaxClosures) {
+        err = "provide between 1 and " + std::to_string(kMaxClosures) + " closures";
+        return false;
+    }
+
+    auto number = [](const crow::json::rvalue& item, const char* key, double fallback,
+                     bool required, double& value, std::string& why) {
+        if (!item.has(key)) {
+            value = fallback;
+            if (required) {
+                why = std::string("closure is missing ") + key;
+            }
+            return !required;
+        }
+        if (item[key].t() != crow::json::type::Number || !std::isfinite(item[key].d())) {
+            why = std::string("closure ") + key + " must be a number";
+            return false;
+        }
+        value = item[key].d();
+        return true;
+    };
+
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        const auto& item = list[i];
+        if (item.t() != crow::json::type::Object) {
+            err = "each closure must be an object";
+            return false;
+        }
+        rl::Closure c;
+        double lat = 0, lon = 0, radius = 0, factor = 0;
+        if (!number(item, "lat", 0, true, lat, err) || !number(item, "lon", 0, true, lon, err) ||
+            !number(item, "radius_m", kDefaultClosureRadiusM, false, radius, err) ||
+            !number(item, "slow_factor", kDefaultSlowFactor, false, factor, err)) {
+            return false;
+        }
+        if (lat < rl::kMinLat || lat > rl::kMaxLat || lon < rl::kMinLon || lon > rl::kMaxLon) {
+            err = "closure is outside the Dehradun road network";
+            return false;
+        }
+        if (radius < kMinClosureRadiusM || radius > kMaxClosureRadiusM) {
+            err = "closure radius_m must be between 20 and 2000";
+            return false;
+        }
+        c.block = true;
+        if (item.has("mode")) {
+            if (item["mode"].t() != crow::json::type::String) {
+                err = "closure mode must be \"block\" or \"slow\"";
+                return false;
+            }
+            const std::string mode = item["mode"].s();
+            if (mode == "slow") {
+                c.block = false;
+            } else if (mode != "block") {
+                err = "closure mode must be \"block\" or \"slow\"";
+                return false;
+            }
+        }
+        if (!c.block && (factor < kMinSlowFactor || factor > kMaxSlowFactor)) {
+            err = "closure slow_factor must be between 1.1 and 20";
+            return false;
+        }
+        c.center = {lat, lon};
+        c.radiusM = radius;
+        c.slowFactor = factor;
+        out.push_back(c);
+    }
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -179,7 +296,15 @@ int main() {
         }
     }
 
-    CROW_ROUTE(app, "/api/health")
+    // Connect routing only after the OSM network has loaded. Preview mode
+    // (ROUTELENS_PREVIEW=1) keeps its sample provider.
+    if (!provider->isPreview() && snapper && network.graph) {
+        provider = std::make_unique<rl::OsmRouteProvider>(network);
+        CROW_LOG_INFO << "OSM routing provider: "
+                      << (provider->available() ? "ready" : "unavailable");
+    }
+
+   CROW_ROUTE(app, "/api/health")
     ([&] {
         crow::json::wvalue response;
         response["status"] = "ok";
@@ -293,29 +418,146 @@ int main() {
         out["preview"] = provider->isPreview();   // true = sample routes, not real
         out["from_cache"] = fromCache;
         addSnapped(out);
-        std::size_t i = 0;
-        for (const auto& r : *routes) {
-            auto& item = out["routes"][i++];
-            item["name"] = r.name;
-            item["eta_s"] = r.etaSeconds;
-            item["free_flow_eta_s"] = r.freeFlowEtaSeconds;
-            item["distance_km"] = r.distanceKm;
-            item["junctions"] = r.junctions;
-            item["coverage"]["live_pct"] = r.livePct;
-            item["coverage"]["typical_pct"] = r.typicalPct;
-            item["coverage"]["estimated_pct"] = r.estimatedPct;
-            item["traffic"] = r.trafficLevel;
-            item["score"] = r.score;
-            item["recommended"] = r.recommended;
-            if (!r.explanation.empty()) {
-                item["explanation"] = r.explanation;
+        putRoutes(out, *routes);
+        return jsonResponse(200, out);
+    });
+
+    // What-if mode: close or slow roads around chosen points, check with BFS
+    // that the destination is still reachable, and compare the best route with
+    // and without the closures.
+    //
+    // POST /api/scenario  (JSON body)
+    //   from_lat, from_lon, to_lat, to_lon           required
+    //   w_time, w_distance, w_junctions, w_traffic   optional priorities
+    //   closures: [{ lat, lon, radius_m?, mode?, slow_factor? }]  1..20 entries
+    //     radius_m    20..2000 m, default 150
+    //     mode        "block" (default) or "slow"
+    //     slow_factor 1.1..20, default 3 (travel-time multiplier, slow mode only)
+    CROW_ROUTE(app, "/api/scenario").methods(crow::HTTPMethod::Post)
+    ([&](const crow::request& req) {
+        if (!routeLimiter.allow_request()) {
+            ++rejectedRequests;
+            crow::response tooMany = jsonError(429, "too many requests, try again in a moment");
+            tooMany.set_header("Retry-After", "1");
+            return tooMany;
+        }
+        auto body = crow::json::load(req.body);
+        if (!body || body.t() != crow::json::type::Object) {
+            return jsonError(400, "request body must be a JSON object");
+        }
+
+        rl::ParamGetter get = [&](const std::string& key) -> std::optional<std::string> {
+            if (!body.has(key)) {
+                return std::nullopt;
             }
-            std::size_t j = 0;
-            for (const auto& p : r.polyline) {
-                item["polyline"][j][0] = p.first;
-                item["polyline"][j][1] = p.second;
-                ++j;
+            const auto& v = body[key];
+            if (v.t() == crow::json::type::Number) {
+                std::ostringstream ss;
+                ss.precision(17);
+                ss << v.d();
+                return ss.str();
             }
+            // Anything else fails the numeric validation with a clear message.
+            return std::string("not-a-number");
+        };
+        std::string err;
+        auto parsed = rl::parseRouteRequest(get, err);
+        if (!parsed) {
+            return jsonError(400, err);
+        }
+
+        std::vector<rl::Closure> closures;
+        if (!parseClosures(body, closures, err)) {
+            return jsonError(400, err);
+        }
+
+        if (!snapper) {
+            return jsonError(503, "road network not loaded on the server");
+        }
+
+        const rl::SnapResult from = snapper->snap({parsed->fromLat, parsed->fromLon}, kMaxSnapMeters);
+        const rl::SnapResult to = snapper->snap({parsed->toLat, parsed->toLon}, kMaxSnapMeters);
+        if (!from.found) {
+            return jsonError(422, "no road within 500 m of the start point");
+        }
+        if (!to.found) {
+            return jsonError(422, "no road within 500 m of the end point");
+        }
+        if (from.node == to.node) {
+            return jsonError(422, "start and end snap to the same junction; pick points farther apart");
+        }
+        if (!provider->available()) {
+            return jsonError(501, "routing engine not connected yet");
+        }
+        parsed->fromNode = from.node;
+        parsed->toNode = to.node;
+
+        const rl::ScenarioEffect effect =
+            rl::applyClosures(network.graph, network.pos, &network.geometry, closures);
+        const rl::ReachResult before = rl::bfsReachable(network.graph, from.node, to.node);
+        const rl::ReachResult after =
+            rl::bfsReachable(network.graph, from.node, to.node, &effect.blocked);
+
+        crow::json::wvalue out;
+        out["scenario"] = "custom";
+        out["affected"]["blocked_edges"] = effect.blockedEdges;
+        out["affected"]["slowed_edges"] = effect.slowedEdges;
+        for (std::size_t i = 0; i < closures.size(); ++i) {
+            out["closures"][i]["lat"] = closures[i].center.lat;
+            out["closures"][i]["lon"] = closures[i].center.lon;
+            out["closures"][i]["radius_m"] = closures[i].radiusM;
+            out["closures"][i]["mode"] = closures[i].block ? "block" : "slow";
+            if (!closures[i].block) {
+                out["closures"][i]["slow_factor"] = closures[i].slowFactor;
+            }
+            out["closures"][i]["edges_affected"] = effect.edgesPerClosure[i];
+        }
+        out["reachable"]["baseline"] = before.reachable;
+        out["reachable"]["with_closures"] = after.reachable;
+        out["reachable"]["hops_baseline"] = before.hops;
+        out["reachable"]["hops_with_closures"] = after.hops;
+        out["routes"] = crow::json::wvalue::list();
+
+        // The route without closures is the same query /api/routes answers, so
+        // share its cache: changing only the closures then skips the slow part.
+        const std::string baselineKey = rl::RouteCache::makeKey(*parsed);
+        std::optional<std::vector<rl::RouteInfo>> cachedBaseline = routeCache.get(baselineKey);
+        std::vector<rl::RouteInfo> baseline =
+            cachedBaseline ? *cachedBaseline : provider->compute(*parsed);
+        if (!cachedBaseline && !baseline.empty()) {
+            routeCache.put(baselineKey, baseline);
+        }
+        if (!baseline.empty()) {
+            out["baseline"]["eta_s"] = baseline.front().etaSeconds;
+            out["baseline"]["distance_km"] = baseline.front().distanceKm;
+        }
+
+        if (!after.reachable) {
+            out["message"] = "the closures cut off every road to the destination";
+            return jsonResponse(200, out);
+        }
+
+        parsed->blockedEdges = effect.blocked;
+        parsed->durationFactor = effect.durationFactor;
+        const std::vector<rl::RouteInfo> routes = provider->compute(*parsed);
+        putRoutes(out, routes);
+
+        if (!baseline.empty() && !routes.empty()) {
+            // The recommended route can change for reasons unrelated to the
+            // closures (the user's priorities pick it), so also report how the
+            // fastest route shown changed: closures can only make that slower.
+            auto fastest = [](const std::vector<rl::RouteInfo>& list) {
+                double best = list.front().etaSeconds;
+                for (const auto& r : list) {
+                    best = std::min(best, r.etaSeconds);
+                }
+                return best;
+            };
+            out["impact"]["recommended_eta_delta_s"] =
+                routes.front().etaSeconds - baseline.front().etaSeconds;
+            out["impact"]["recommended_distance_delta_km"] =
+                routes.front().distanceKm - baseline.front().distanceKm;
+            out["impact"]["fastest_eta_delta_s"] = fastest(routes) - fastest(baseline);
         }
         return jsonResponse(200, out);
     });
