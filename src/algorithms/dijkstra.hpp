@@ -1,3 +1,4 @@
+
 #ifndef RL_DIJKSTRA_HPP
 #define RL_DIJKSTRA_HPP
 
@@ -12,11 +13,15 @@ struct DijkstraResult {
     std::vector<int> path;
 };
 
-// Finds the minimum-cost path using the supplied non-negative edge weights.
-DijkstraResult dijkstra(const Graph* graph,
-                        const Weights* weights,
-                        int source,
-                        int destination);
+// Finds the minimum-cost path using non-negative edge weights.
+// blockedEdges is optional and marks graph edge indices to ignore.
+DijkstraResult dijkstra(
+    const Graph* graph,
+    const Weights* weights,
+    int source,
+    int destination,
+    const std::vector<bool>* blockedEdges = nullptr
+);
 
 } // namespace rl
 
