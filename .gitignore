@@ -18,3 +18,4 @@ data/cache/
 # algorithm evaluation: separate Release build and raw results (report is docs/evaluation_phase2.md)
 build-eval/
 evaluation/results/
+data/osm/*.html

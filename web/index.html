@@ -14,13 +14,14 @@
     <span id="traffic-badge" class="badge" title="Traffic data source">traffic: …</span>
   </header>
 
+  <div id="preview-banner" class="banner preview" role="alert" hidden>PREVIEW MODE: the routes shown are SAMPLES for testing the interface. They are NOT computed from the road network or from live traffic.</div>
   <div id="banner" class="banner" role="status" hidden></div>
 
   <main>
     <aside id="panel">
       <section>
         <h2>1. Pick points</h2>
-        <p class="hint">Click the map: first click sets Start, second sets End.</p>
+        <p class="hint">Click the map: first click sets Start, second sets End. Drag a marker to move it.</p>
         <div class="row">
           <button id="reset" type="button">Reset points</button>
         </div>
@@ -52,10 +53,11 @@
 
       <section>
         <h2>Routes</h2>
+        <p id="scenario-note" class="hint" hidden></p>
         <div id="cards" aria-live="polite"><p class="hint">Results appear here.</p></div>
       </section>
 
-      <section>
+      <section id="comparison-section" hidden>
         <h2>Comparison</h2>
         <div class="chart-wrap"><canvas id="chart" aria-label="Route comparison chart" role="img"></canvas></div>
       </section>

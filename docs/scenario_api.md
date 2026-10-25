@@ -69,6 +69,7 @@ curl -s -X POST http://127.0.0.1:18080/api/scenario \
 | Status | When |
 |---|---|
 | 400 | Body is not a JSON object, a coordinate or weight is invalid, or `closures` is missing, empty, over 20 entries, outside the box, or has a bad `radius_m` / `mode` / `slow_factor` |
+| 429 | More than 10 requests in one second (limiter shared with `/api/routes`); retry after 1 s |
 | 422 | A click is more than 500 m from any road, or start and end snap to the same junction |
 | 501 | Routing engine not connected |
 | 503 | Road network not loaded |
@@ -85,7 +86,21 @@ curl -s -X POST http://127.0.0.1:18080/api/scenario \
 4. The usual filters (detour <= 1.5x, overlap < 0.85, at most 3 routes) and
    ranking apply.
 
+## Relation to the traffic scenarios
+
+`/api/routes?scenario=rain|rush_hour|incident` (traffic module,
+`src/traffic/scenario.*`) changes the **speeds** in the traffic state.
+`/api/scenario` (this document) changes the **routing**: it removes or slows the
+roads around points the user picks and re-runs the route search. The two are
+independent and not combined yet, so a closure here does not use the rain or
+rush-hour speeds.
+
 ## Limits worth knowing
+
+- The no-closure baseline comes from the same 5-minute route cache as
+  `/api/routes`. The first request for a start/end pair takes about 3 s
+  (Yen's algorithm is the slow part); after that, changing only the closures
+  takes about 70 ms.
 
 - A heavily slowed road can disappear from `routes` instead of showing a long
   ETA: the penalty search drops routes costing more than 1.5x the cheapest

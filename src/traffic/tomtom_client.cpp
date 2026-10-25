@@ -1,6 +1,8 @@
 #include "tomtom_client.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -40,7 +42,7 @@ static std::string localDate() {
 
 TomTomClient::TomTomClient(TomTomOptions opt, FetchFn fetch, ClockFn clock, SleepFn sleep, TodayFn today)
     : opt_(std::move(opt)), fetch_(std::move(fetch)), clock_(std::move(clock)), sleep_(std::move(sleep)),
-      today_(std::move(today)) {
+      today_(std::move(today)), lru_(static_cast<std::size_t>(std::max(1, opt_.maxCachedSegments))) {
     if (!clock_) clock_ = steadyNowS;
     if (!sleep_) sleep_ = [](double s) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); };
     if (!today_) today_ = localDate;
@@ -79,12 +81,18 @@ FetchResult TomTomClient::fetch(LatLon p) {
     double now = clock_();
 
     // 1. Segment cache: is p on a road we already have fresh data for?
-    for (size_t i = 0; i < cache_.size(); i++) {
-        if (now - cache_[i].at > opt_.cacheTtlS) continue;
-        double d = distanceToSegmentM(p, cache_[i].seg);
-        if (d <= rules.maxSnapM && (r.segmentIndex < 0 || d < r.snapM)) { r.segmentIndex = (int)i; r.snapM = d; }
+    pruneIndex();
+    for (const auto& [id, e] : index_) {
+        if (now - e.ptr->at > opt_.cacheTtlS || !e.box.contains(p)) continue;   // expired, or too far away
+        double d = distanceToSegmentM(p, e.ptr->seg);
+        if (d <= rules.maxSnapM && (r.segmentIndex < 0 || d < r.snapM)) { r.segmentIndex = id; r.snapM = d; }
     }
-    if (r.segmentIndex >= 0) { r.status = FetchStatus::CachedOk; cacheHits_++; return r; }
+    if (r.segmentIndex >= 0) {
+        lru_.get(r.segmentIndex);   // mark as recently used
+        r.status = FetchStatus::CachedOk;
+        cacheHits_++;
+        return r;
+    }
 
     // 2. Known no-coverage point?
     for (const CachedMiss& m : misses_) {
@@ -141,7 +149,7 @@ FetchResult TomTomClient::fetch(LatLon p) {
         return r;
     }
     if (resp.status == 400) {   // e.g. no road near the point
-        misses_.push_back({ p, now });
+        addMiss(p, now);
         r.status = FetchStatus::NoCoverage;
         r.message = "TomTom has no road near this point (HTTP 400)";
         return r;
@@ -155,17 +163,23 @@ FetchResult TomTomClient::fetch(LatLon p) {
 
     // Cache the segment even if it is far from p: it is valid data for that road.
     int idx = -1;
-    for (size_t i = 0; i < cache_.size(); i++) {
-        const auto& s = cache_[i].seg.shape;
+    pruneIndex();
+    for (const auto& [id, e] : index_) {   // the same road segment fetched before? reuse its id
+        const auto& s = e.ptr->seg.shape;
         if (s.size() == seg.shape.size() && haversineMeters(s.front(), seg.shape.front()) < 1.0 &&
-            haversineMeters(s.back(), seg.shape.back()) < 1.0) { idx = (int)i; break; }
+            haversineMeters(s.back(), seg.shape.back()) < 1.0) { idx = id; break; }
     }
-    if (idx < 0) { cache_.push_back({ std::move(seg), now }); idx = (int)cache_.size() - 1; }
-    else cache_[idx] = { std::move(seg), now };
+    if (idx < 0) idx = nextId_++;
+    BBox box;
+    for (const LatLon& q : seg.shape) box.extend(q);
+    auto ptr = std::make_shared<const CachedSegment>(CachedSegment{ std::move(seg), now });
+    lru_.put(idx, ptr);                         // may evict the least recently used segment
+    index_[idx] = { box.padded(rules.maxSnapM), ptr };
+    pruneIndex();                               // drop whatever lru_ evicted
 
-    r.snapM = distanceToSegmentM(p, cache_[idx].seg);
+    r.snapM = distanceToSegmentM(p, ptr->seg);
     if (r.snapM > rules.maxSnapM) {
-        misses_.push_back({ p, now });
+        addMiss(p, now);
         r.status = FetchStatus::NoCoverage;
         r.message = "nearest TomTom road is " + std::to_string((int)r.snapM) + " m away";
         return r;
@@ -173,6 +187,21 @@ FetchResult TomTomClient::fetch(LatLon p) {
     r.status = FetchStatus::Ok;
     r.segmentIndex = idx;
     return r;
+}
+
+void TomTomClient::pruneIndex() {
+    for (auto it = index_.begin(); it != index_.end();)
+        it = lru_.contains(it->first) ? std::next(it) : index_.erase(it);
+}
+
+void TomTomClient::addMiss(LatLon p, double now) {
+    // Keep only fresh misses, at most maxCachedSegments of them (oldest dropped first).
+    misses_.erase(std::remove_if(misses_.begin(), misses_.end(),
+                                 [&](const CachedMiss& m) { return now - m.at > opt_.cacheTtlS; }),
+                  misses_.end());
+    misses_.push_back({ p, now });
+    std::size_t cap = static_cast<std::size_t>(std::max(1, opt_.maxCachedSegments));
+    if (misses_.size() > cap) misses_.erase(misses_.begin(), misses_.begin() + (misses_.size() - cap));
 }
 
 std::vector<FetchResult> updateRouteTraffic(const OsmNetwork& net, TrafficState& state, TomTomClient& client,

@@ -25,6 +25,8 @@ struct RouteInfo {
     std::string trafficLevel;  // "Low" | "Medium" | "High"
     double score = 0;          // lower is better, from the user's priorities
     bool recommended = false;
+    // Why this route scored as it did. Optional; the website shows it when present.
+    std::string explanation;
 };
 
 // Seam between the web server (Aayush) and the routing engine (routing
@@ -34,6 +36,8 @@ class RouteProvider {
 public:
     virtual ~RouteProvider() = default;
     virtual bool available() const = 0;
+    // True only for the interface-preview provider, whose routes are NOT real.
+    virtual bool isPreview() const { return false; }
     virtual std::vector<RouteInfo> compute(const RouteRequest& request) = 0;
 };
 

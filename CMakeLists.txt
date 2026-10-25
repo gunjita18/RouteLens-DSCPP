@@ -53,6 +53,29 @@ target_include_directories(test_request_params PRIVATE
 target_compile_options(test_request_params PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RequestParamsTests COMMAND test_request_params)
 
+find_package(Threads REQUIRED)
+
+# Route-result cache (LRU + 5-minute expiry), including a multi-threaded check.
+add_executable(test_route_cache
+    tests/test_route_cache.cpp
+)
+target_include_directories(test_route_cache PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+)
+target_link_libraries(test_route_cache PRIVATE Threads::Threads)
+target_compile_options(test_route_cache PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RouteCacheTests COMMAND test_route_cache)
+
+# Interface-preview provider (sample routes, clearly labelled).
+add_executable(test_preview_provider
+    tests/test_preview_provider.cpp
+)
+target_include_directories(test_preview_provider PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+)
+target_compile_options(test_preview_provider PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME PreviewProviderTests COMMAND test_preview_provider)
+
 # Road network: the map-data module's graph and OSM loader, plus the KD-tree
 # road snapper that connects clicked points to it.
 add_library(routelens_osm STATIC
@@ -133,7 +156,7 @@ add_test(NAME PenaltyTests COMMAND test_penalty)
 add_executable(test_scenario tests/test_scenario.cpp)
 target_link_libraries(test_scenario PRIVATE routelens_osm)
 target_compile_options(test_scenario PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME ScenarioTests COMMAND test_scenario)
+add_test(NAME ClosureTests COMMAND test_scenario)
 # Route provider: penalty + Yen candidates, blocked and slowed roads
 add_executable(test_route_provider
     tests/test_route_provider.cpp
@@ -161,6 +184,8 @@ add_library(routelens_traffic STATIC
     src/traffic/traffic.cpp
     src/traffic/tomtom_client.cpp
     src/traffic/eta.cpp
+    src/traffic/junctions.cpp
+    src/traffic/scenario.cpp
     src/data/http_client.cpp
     src/data/geo.cpp
 )
@@ -172,3 +197,25 @@ add_executable(test_traffic tests/test_traffic.cpp)
 target_link_libraries(test_traffic PRIVATE routelens_traffic)
 target_compile_options(test_traffic PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME TrafficTests COMMAND test_traffic)
+
+# ---------------------------------------------------------------- major junctions (Sneha)
+add_executable(routelens_junctions_info src/app/junctions_info_main.cpp)
+target_link_libraries(routelens_junctions_info PRIVATE routelens_traffic)
+target_compile_options(routelens_junctions_info PRIVATE -Wall -Wextra -pedantic)
+
+add_executable(test_junctions tests/test_junctions.cpp)
+target_link_libraries(test_junctions PRIVATE routelens_traffic)
+target_compile_options(test_junctions PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME JunctionTests COMMAND test_junctions)
+
+# ---------------------------------------------------------------- scenarios (Sneha)
+add_executable(test_scenarios tests/test_scenarios.cpp)
+target_link_libraries(test_scenarios PRIVATE routelens_traffic)
+target_compile_options(test_scenarios PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME ScenarioTests COMMAND test_scenarios)
+
+# ---------------------------------------------------------------- TomTom cache limit (Sneha)
+add_executable(test_tomtom_cache tests/test_tomtom_cache.cpp)
+target_link_libraries(test_tomtom_cache PRIVATE routelens_traffic)
+target_compile_options(test_tomtom_cache PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME TomTomCacheTests COMMAND test_tomtom_cache)
