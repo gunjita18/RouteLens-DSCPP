@@ -64,6 +64,8 @@ add_library(routelens_osm STATIC
     src/algorithms/dijkstra.cpp
     src/algorithms/astar.cpp
     src/algorithms/yen.cpp
+    src/algorithms/penalty.cpp
+    src/algorithms/scenario.cpp
     src/algorithms/route_ranking.cpp
 )
 target_compile_options(routelens_osm PRIVATE -Wall -Wextra)
@@ -117,6 +119,33 @@ add_executable(test_astar tests/test_astar.cpp)
 target_link_libraries(test_astar PRIVATE routelens_osm)
 target_compile_options(test_astar PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME AStarTests COMMAND test_astar)
+# A* heuristic: same optimal cost as Dijkstra on random graphs, fewer expansions
+add_executable(test_astar_heuristic tests/test_astar_heuristic.cpp)
+target_link_libraries(test_astar_heuristic PRIVATE routelens_osm)
+target_compile_options(test_astar_heuristic PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME AStarHeuristicTests COMMAND test_astar_heuristic)
+# Penalty-method alternative routes
+add_executable(test_penalty tests/test_penalty.cpp)
+target_link_libraries(test_penalty PRIVATE routelens_osm)
+target_compile_options(test_penalty PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME PenaltyTests COMMAND test_penalty)
+# What-if scenario mode: closures, slowdowns, BFS reachability
+add_executable(test_scenario tests/test_scenario.cpp)
+target_link_libraries(test_scenario PRIVATE routelens_osm)
+target_compile_options(test_scenario PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME ScenarioTests COMMAND test_scenario)
+# Route provider: penalty + Yen candidates, blocked and slowed roads
+add_executable(test_route_provider
+    tests/test_route_provider.cpp
+    src/server/osm_route_provider.cpp
+)
+target_link_libraries(test_route_provider PRIVATE routelens_osm)
+target_compile_options(test_route_provider PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RouteProviderTests COMMAND test_route_provider)
+# Algorithm evaluation harness (see evaluation/run_evaluation.sh)
+add_executable(routelens_eval src/app/eval_main.cpp)
+target_link_libraries(routelens_eval PRIVATE routelens_osm)
+target_compile_options(routelens_eval PRIVATE -Wall -Wextra -pedantic)
 # Yen's K-shortest loopless paths tests
 add_executable(test_yen tests/test_yen.cpp)
 target_link_libraries(test_yen PRIVATE routelens_osm)

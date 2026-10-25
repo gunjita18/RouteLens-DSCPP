@@ -5,6 +5,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace rl {
 
@@ -22,6 +23,10 @@ struct RouteRequest {
     // Graph nodes the two clicks were snapped to by the server (-1 = not snapped).
     // The routing engine searches between these.
     int fromNode = -1, toNode = -1;
+    // What-if closures from /api/scenario, per graph edge (empty = none).
+    // blockedEdges: edge may not be used. durationFactor: travel-time multiplier.
+    std::vector<bool> blockedEdges;
+    std::vector<double> durationFactor;
 };
 
 // Returns the raw query-string value for a key, or nullopt if absent.

@@ -1,11 +1,14 @@
 #include "osm_route_provider.hpp"
 
+#include "../algorithms/penalty.hpp"
+#include "../algorithms/scenario.hpp"
 #include "../algorithms/yen.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <iostream>
+#include <set>
 #include <vector>
 
 namespace rl {
@@ -42,15 +45,20 @@ void appendPoint(RouteInfo& route, const LatLon& point) {
     route.polyline.emplace_back(point.lat, point.lon);
 }
 
-// Find the directed edge for a pair of consecutive vertices.
-int findEdge(const Graph* graph, int from, int to) {
+// Find the directed edge a search would use between two consecutive vertices:
+// the cheapest usable one when parallel edges exist.
+int findBestEdge(const Graph* graph, const std::vector<double>& costs,
+                 const std::vector<bool>& blocked, int from, int to) {
     if (!graph || from < 0 || from >= graph->node_count) return -1;
 
+    int best = -1;
     for (int e = graph->first_out[from]; e != -1; e = graph->next_out[e]) {
-        if (graph->edges[e].to == to) return e;
+        if (graph->edges[e].to != to) continue;
+        if (!blocked.empty() && blocked[e]) continue;
+        if (best < 0 || costs[e] < costs[best]) best = e;
     }
 
-    return -1;
+    return best;
 }
 
 double normalise(double value, double minimum, double maximum) {
@@ -143,13 +151,59 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
     weights.per_congested_minute = request.wTraffic;
     weights.per_signal = request.wJunctions;
 
-    const YenResult alternatives =
-        yenKShortestPaths(graph, &weights, request.fromNode,
-                         request.toNode, 8);
+    // What-if closures (empty for a normal request).
+    const bool hasScenario =
+        !request.blockedEdges.empty() || !request.durationFactor.empty();
+    const bool validScenario =
+        (request.blockedEdges.empty() ||
+         request.blockedEdges.size() ==
+             static_cast<std::size_t>(graph->edge_count)) &&
+        (request.durationFactor.empty() ||
+         request.durationFactor.size() ==
+             static_cast<std::size_t>(graph->edge_count));
+    if (!validScenario) return result;
+
+    ScenarioEffect effect;
+    effect.blocked = request.blockedEdges;
+    effect.durationFactor = request.durationFactor;
+    if (effect.durationFactor.empty()) {
+        effect.durationFactor.assign(graph->edge_count, 1.0);
+    }
+
+    const std::vector<double> edgeCosts =
+        scenarioCosts(graph, &weights, effect);
+    if (edgeCosts.size() != static_cast<std::size_t>(graph->edge_count)) {
+        return result;
+    }
+    const std::vector<bool>* blocked =
+        request.blockedEdges.empty() ? nullptr : &request.blockedEdges;
+
+    // The penalty method is the primary generator of alternatives. Yen's
+    // k-shortest paths tops the list up with near-shortest variants; it works
+    // on the unmodified graph, so it is skipped when closures are active.
+    PenaltyOptions penalty;
+    penalty.k = 5;
+    penalty.penaltyFactor = 1.5;
+    penalty.maxStretch = 1.5;
+    const PenaltyResult penaltyRoutes = penaltyAlternatives(
+        graph, edgeCosts, request.fromNode, request.toNode, penalty, blocked);
+
+    std::vector<std::vector<int>> generatedPaths = penaltyRoutes.paths;
+
+    if (!hasScenario) {
+        const YenResult alternatives =
+            yenKShortestPaths(graph, &weights, request.fromNode,
+                             request.toNode, 8);
+        std::set<std::vector<int>> known(generatedPaths.begin(),
+                                         generatedPaths.end());
+        for (const auto& path : alternatives.paths) {
+            if (known.insert(path).second) generatedPaths.push_back(path);
+        }
+    }
 
     std::vector<Candidate> candidates;
 
-    for (const auto& path : alternatives.paths) {
+    for (const auto& path : generatedPaths) {
         if (path.size() < 2) continue;
 
         Candidate candidate;
@@ -169,21 +223,24 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
             const int from = path[i - 1];
             const int to = path[i];
 
-            const int edgeIndex = findEdge(graph, from, to);
+            const int edgeIndex = findBestEdge(
+                graph, edgeCosts, request.blockedEdges, from, to);
             if (edgeIndex < 0) {
                 validPath = false;
                 break;
             }
 
             const Edge& edge = graph->edges[edgeIndex];
+            // Slowed roads take longer; 1.0 when there is no scenario.
+            const double edgeSeconds = std::max(0.0, edge.duration_s) *
+                                       effect.durationFactor[edgeIndex];
 
             totalDistanceM += std::max(0.0, edge.distance_m);
-            durationSeconds += std::max(0.0, edge.duration_s);
+            durationSeconds += edgeSeconds;
 
             const double traffic = clampTraffic(edge.traffic_index);
-            trafficWeightedSeconds += traffic *
-                                      std::max(0.0, edge.duration_s);
-            totalTrafficWeight += std::max(0.0, edge.duration_s);
+            trafficWeightedSeconds += traffic * edgeSeconds;
+            totalTrafficWeight += edgeSeconds;
 
             // Count internal graph nodes with more than one connected
             // road in the degree approximation used by this provider.
