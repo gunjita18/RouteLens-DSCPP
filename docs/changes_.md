@@ -279,6 +279,93 @@ Verification (2026-10-25, WSL, Release build):
   `/api/health` reported them.
 - **Not verified:** junction counts on real routes (needs the routing engine).
 
+## What-if scenario interface (2026-11-01)
+
+The last open Phase II item of mine: the interface for the scenario mode whose
+backend (`POST /api/scenario`, Gunjita, PR #16) is described in
+`docs/scenario_api.md`. `main` was merged into `aayush` first; the one conflict
+(`src/server/main.cpp`, junction loading next to the new OSM provider) was
+resolved by keeping both.
+
+| Item | What changed | Files |
+|---|---|---|
+| Closure controls | New section "3. What-if": a toggle to place closures by clicking the map (Start/End clicks are paused meanwhile), Block or Slow (1.5x to 10x longer), a radius slider (20 to 1000 m) for new closures, a numbered list with Remove buttons, Clear closures, and a limit of 20 (the server's) | `web/index.html`, `web/app.js`, `web/style.css` |
+| One way to ask for routes | With at least one closure every request (Find button, dragging a marker, sliders, scenario buttons, adding or removing a closure) goes to `POST /api/scenario`; without closures to `/api/routes`. The button says "Find routes with 2 closures". Both share one request function, so 400/422/429/501/503 are shown the same way | `web/app.js` |
+| Impact summary | How the fastest route changed (uses `fastest_eta_delta_s`, as the API doc advises, not the recommended route), road segments blocked and slowed, a clear message when the closures cut off the destination, a warning for each closure that touches no road, and a note that rain or rush-hour speeds are not combined with closures (the backend does not do that yet) | `web/app.js`, `web/index.html` |
+| Closures readable without colour | Blocked: orange solid circle labelled "Closed n"; slowed: pink dashed circle labelled "Slow n" | `web/app.js`, `web/style.css` |
+| Bug fix: clicking a route | `bindPopup()` stops the click event, so in placing mode a click on a route line opened its popup and no closure was placed, although routes are exactly where users put closures. Routes now handle their own click (closure when placing, popup otherwise) and do not pass it on to the map, so one click adds exactly one closure | `web/app.js` |
+| `snapped` in `/api/scenario` | `docs/scenario_api.md` promises it, the handler did not send it. Now written by a `putSnapped()` helper shared with `/api/routes`, so the website shows where the clicks landed in what-if mode too | `src/server/main.cpp` |
+
+Verification (2026-11-01, WSL, Release build, real Dehradun network):
+- Build without warnings outside Crow; `ctest` 20/20 pass.
+- `POST /api/scenario`, Clock Tower to ISBT with the API doc's closure: 200,
+  `snapped` present, 32 segments blocked, still reachable, 3 routes, 0.35 s.
+- The real website in headless Edge (Playwright; a test-only line exposed the
+  Leaflet map so clicks could hit exact coordinates; nothing in the repository),
+  at 1366x800 and 390x844: 42 of 42 checks pass. Covered: placing a closure calls
+  `/api/scenario` once and leaves Start/End alone; a click on a route line adds
+  exactly one closure and opens no popup; the impact box; a slow closure with
+  5x; a 600 m closure at the destination reports the cut-off; removing it brings
+  routes back; a closure in the empty hills is flagged as touching no road; the
+  Rain note; Clear returns to `/api/routes` and hides the impact box; route
+  cards still open their popup; no horizontal overflow; no JavaScript errors.
+- **Not verified:** real touch devices, a screen reader, and keyboard-only use
+  (closures, like Start/End, can only be placed by clicking the map).
+
+Found while testing: "major junctions" on the route cards were every
+intersection. Fixed in the next section.
+
+## Routing uses the traffic module: junctions, waits, scenarios (2026-11-01)
+
+Three problems found while making the demo, all with one cause: the routing
+provider did not use the traffic module. **This changes files owned by Gunjita
+(`osm_route_provider.*`, `tests/test_route_provider.cpp`) and her
+`docs/scenario_api.md`; please review.** Sneha's module is only called.
+
+| Problem (Clock Tower to ISBT) | Cause | Fix |
+|---|---|---|
+| Rush hour, Rain and Incident gave the same ETAs as Normal | The provider ignored `request.scenario` | Per-edge speed factors from `rl::ScenarioSettings` (rain x0.88; rush hour x0.65 main roads, x0.85 others, via `rl::isMainRoad`). Computed per request, not with `TrafficState`, which writes `traffic_index` into the shared graph while Crow serves requests in parallel. Incident changes no speeds: the website's Incident button now switches on closure placing |
+| "Major junctions": 74, 77 and 96 on 6-8 km routes | Every node with more than two roads was counted | `rl::junctionsOnRoute()` with the 41-junction list the server loads (`OsmRouteProvider(network, &junctions)`); now 0-7 per route |
+| ETA 38.5 min, of which about 25 min were waits; a distance-only search found a route that was both shorter and faster than the time-only one | ETA = driving + 20 s per intersection, added after the search, which optimised driving time only | 30 s per major junction (`docs/TRAFFIC.md` section 8, provisional), and the same wait is in the search's edge costs; ETA now 14.9 min, and the time-only search gives the fastest route (13.7 min) |
+| Rain made a 22.6 min route beat a 16.8 min one | `normalise()` in the ranking stretched rounding noise (rain slows every route equally) to the full 0-1 range | Values equal up to 1e-9 relative count as equal |
+| A closure on the fastest route made the trip *faster* (-69 s); on 60 random trips the fastest route shown was slower than the true fastest in 9 (up to +109 s) | Alternatives came only from the weighted search; the time-optimal route was missing, dropped as a near-duplicate, or lost to the three-route limit; and the search charged a divided junction's wait at each of its nodes | The time-optimal route (one more Dijkstra, about 3 ms) is always the second candidate, exempt from the detour filter, and kept despite overlap when at least 30 s faster; the wait is charged only on an edge entering a junction from outside it |
+
+Also: `/api/scenario` takes `scenario` in its JSON body, so closures combine
+with rain or rush hour (`traffic_scenario` in the answer); the website sends it
+and no longer warns that they are not combined. "ETA (no traffic)" is the ETA
+without the scenario speeds (closures still count), so the cards show the
+scenario's effect. Rain and rush hour routes say e.g. "Low (rain estimate)",
+using the traffic module's thresholds.
+
+Verification (2026-11-01, WSL, Release build):
+- `ctest` 20/20 pass (asserts confirmed active: `-UNDEBUG` follows `-DNDEBUG`).
+  `test_route_provider` gained checks for the junction count and 30 s wait, a
+  case where the wait changes the chosen route, rain, rush hour (the side road
+  wins), incident, closures plus rain, an unchanged recommendation under rain
+  with all four priorities, and that the provider never writes to the graph.
+  Its old expectations (+20 s per interior node) were changed to the new rule.
+- Real network, Clock Tower to ISBT, website default sliders: recommended
+  13.7 min, 6.99 km, 3 major junctions (also the fastest); a closure on it adds
+  50 s at each of three points tried. Rain and rush hour raise the ETAs and can
+  change the routes. Unknown `scenario` in the JSON body: 400.
+- 60 random trips on the real network (seed 11, requests paced under the rate
+  limit, none skipped): the fastest route shown is slower than the time-only
+  best in 3 trips, by at most 11 s (near-duplicates under the 30 s rule; was 9
+  trips, up to 109 s); a closure on the fastest route made it faster in 1 trip,
+  by 10 s (was 6). The website calls a drop "news" only from 30 s.
+- `/api/routes` without cache: 0.15 to 0.34 s.
+- Website in headless Edge at 1366x800 and 390x844: 52 of 52 checks pass,
+  including rain sent with closures, the rain estimate on the cards, and
+  Incident switching on placing.
+- `docs/evaluation_phase2.md` is not affected: it measures the searches on
+  free-flow edge costs, not the provider's ETA.
+
+Still open: the 30 s wait and the scenario factors are provisional (ETA
+study); with equal priorities rush hour can recommend a slower route on quieter
+roads, because "avoid congestion" then has a 25% weight; the 60-trip check is a
+script run by hand, not part of `ctest` (it needs the real network and a
+running server).
+
 ## Files deliberately not touched (other members)
 `src/core/*`, `src/data/*`, `src/algorithms/min_heap.hpp`,
 `src/app/osm_info_main.cpp`, `preprocess/export_osm.py`, `tests/test_osm.cpp`,

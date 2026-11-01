@@ -61,6 +61,20 @@ input[type=range] { width: 100%; margin: 0; }
 
 .chart-wrap { position: relative; height: 220px; }
 
+/* What-if closures. Blocked and slowed areas differ by colour, line style and
+   label text ("Closed" / "Slow"), so colour is never the only cue. */
+.opt { color: var(--muted); font-weight: 400; }
+#place-closures { width: 100%; margin-bottom: 6px; }
+#place-closures[aria-pressed="true"] { background: #d55e00; border-color: #d55e00; color: #fff; font-weight: 600; }
+#map.placing.leaflet-grab { cursor: crosshair; }
+select { min-height: 36px; width: 100%; font: inherit; }
+#closure-list { margin: 6px 0; padding-left: 22px; font-size: 14px; }
+#closure-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#closure-list li button { min-height: 36px; padding: 0 10px; }
+.impact { margin: 6px 0; padding: 8px 10px; border: 1px solid var(--line); border-left: 6px solid #d55e00; border-radius: 6px; font-size: 14px; }
+.impact p { margin: 2px 0; }
+.impact .warn { color: #8a3a00; }
+
 @media (max-width: 800px) {
   main { flex-direction: column-reverse; height: auto; }
   #panel { width: 100%; max-width: none; border-right: 0; border-top: 1px solid var(--line); }

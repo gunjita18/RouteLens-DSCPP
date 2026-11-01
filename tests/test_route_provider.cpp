@@ -1,8 +1,10 @@
 
 // Route provider on a small hand-built network: penalty-method alternatives,
-// and what-if scenarios (blocked and slowed roads).
+// what-if scenarios (blocked and slowed roads), major-junction waits and
+// traffic scenarios (rain, rush hour).
 
 #include "../src/server/osm_route_provider.hpp"
+#include "../src/traffic/scenario.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -80,8 +82,10 @@ int main() {
         assert(routes[0].recommended && !routes[1].recommended);
         assert(passesThrough(routes[0], f.net.pos[1]));  // north road first
         assert(passesThrough(routes[1], f.net.pos[2]));
-        assert(std::abs(routes[0].etaSeconds - 420.0) < 1e-6);
-        assert(std::abs(routes[1].etaSeconds - 520.0) < 1e-6);
+        // No junction list: no waits, so the ETA is the driving time.
+        assert(std::abs(routes[0].etaSeconds - 400.0) < 1e-6);
+        assert(std::abs(routes[1].etaSeconds - 500.0) < 1e-6);
+        assert(routes[0].junctions == 0 && routes[1].junctions == 0);
         assert(std::abs(routes[0].distanceKm - 4.0) < 1e-6);
         assert(std::abs(routes[1].distanceKm - 5.0) < 1e-6);
     }
@@ -118,9 +122,101 @@ int main() {
         assert(routes.size() == 2);
         assert(passesThrough(routes[0], f.net.pos[2]));  // south now recommended
         assert(routes[0].recommended);
-        // Each road has one interior junction, which adds 20 s.
-        assert(std::abs(routes[0].etaSeconds - 520.0) < 1e-6);
-        assert(std::abs(routes[1].etaSeconds - 620.0) < 1e-6);
+        assert(std::abs(routes[0].etaSeconds - 500.0) < 1e-6);
+        assert(std::abs(routes[1].etaSeconds - 600.0) < 1e-6);
+        // A closure is physical, so the "no traffic" ETA includes it too.
+        assert(std::abs(routes[1].freeFlowEtaSeconds - 600.0) < 1e-6);
+    }
+
+    // ---- major junctions: counted once, 30 s wait, and the search sees it ----
+    {
+        // One documented junction covering node 1 (the north road's middle).
+        rl::JunctionIndex idx;
+        rl::Junction j;
+        j.name = "North Chowk";
+        j.pos = f.net.pos[1];
+        j.nodes = {1};
+        idx.junctions.push_back(j);
+        idx.junctionAtNode = {-1, 0, -1, -1};
+        rl::OsmRouteProvider withJunctions(f.net, &idx);
+
+        std::vector<rl::RouteInfo> routes = withJunctions.compute(request());
+        assert(routes.size() == 2);
+        assert(passesThrough(routes[0], f.net.pos[1]));  // north still faster: 430 < 500
+        assert(routes[0].junctions == 1 && routes[1].junctions == 0);
+        assert(std::abs(routes[0].etaSeconds - 430.0) < 1e-6);
+        assert(std::abs(routes[0].freeFlowEtaSeconds - 430.0) < 1e-6);
+        assert(std::abs(routes[1].etaSeconds - 500.0) < 1e-6);
+
+        // North slowed to 480 s of driving: 480 + 30 > 500, so the junction
+        // wait decides it. Without the wait in the search north would win.
+        rl::RouteRequest r = request();
+        r.durationFactor.assign(f.net.graph->edge_count, 1.0);
+        r.durationFactor[f.north2] = 1.4;  // 200 + 280 = 480 s
+        routes = withJunctions.compute(r);
+        assert(routes.size() == 2);
+        assert(passesThrough(routes[0], f.net.pos[2]));  // south recommended
+        assert(std::abs(routes[0].etaSeconds - 500.0) < 1e-6);
+        assert(std::abs(routes[1].etaSeconds - 510.0) < 1e-6);
+
+        // Rain slows every road by the same factor, so with all four priorities
+        // the recommendation must not change: congestion is equal on both
+        // routes and rounding noise in it must not count as a difference.
+        rl::RouteRequest all = request();
+        all.wTime = all.wDistance = all.wJunctions = all.wTraffic = 0.25;
+        const std::vector<rl::RouteInfo> dry = withJunctions.compute(all);
+        all.scenario = "rain";
+        const std::vector<rl::RouteInfo> wet = withJunctions.compute(all);
+        assert(dry.size() == 2 && wet.size() == 2);
+        assert(passesThrough(dry[0], f.net.pos[1]) && passesThrough(wet[0], f.net.pos[1]));
+        assert(std::abs(dry[0].score - wet[0].score) < 1e-9);
+    }
+
+    // ---- traffic scenarios: rain slows everything, rush hour main roads most ----
+    {
+        // North road primary (a main road), south road residential.
+        f.net.roadClass.assign(f.net.graph->edge_count, "residential");
+        f.net.roadClass[f.north1] = "primary";
+        f.net.roadClass[f.north2] = "primary";
+        f.net.roadClass[4] = "primary";   // 1 -> 0
+        f.net.roadClass[5] = "primary";   // 3 -> 1
+        const rl::ScenarioSettings settings;
+
+        rl::RouteRequest r = request();
+        r.scenario = "rain";
+        std::vector<rl::RouteInfo> routes = provider.compute(r);
+        assert(routes.size() == 2);
+        assert(passesThrough(routes[0], f.net.pos[1]));  // same order: all roads x 0.88
+        assert(std::abs(routes[0].etaSeconds - 400.0 / settings.rainFactor) < 1e-6);
+        assert(std::abs(routes[0].freeFlowEtaSeconds - 400.0) < 1e-6);   // without the rain
+        assert(routes[0].trafficLevel == std::string("Low (rain estimate)"));
+
+        r.scenario = "rush_hour";   // north 400 / 0.65 = 615 s, south 500 / 0.85 = 588 s
+        routes = provider.compute(r);
+        assert(routes.size() == 2);
+        assert(passesThrough(routes[0], f.net.pos[2]));  // the side road now wins
+        assert(std::abs(routes[0].etaSeconds - 500.0 / settings.rushOtherFactor) < 1e-6);
+        assert(std::abs(routes[1].etaSeconds - 400.0 / settings.rushMainFactor) < 1e-6);
+        assert(std::abs(routes[1].freeFlowEtaSeconds - 400.0) < 1e-6);
+
+        r.scenario = "incident";   // an incident is a closure the user places
+        routes = provider.compute(r);
+        assert(std::abs(routes[0].etaSeconds - 400.0) < 1e-6);
+
+        // Closures and rain combine: south blocked, north in the rain.
+        r = request();
+        r.scenario = "rain";
+        r.blockedEdges.assign(f.net.graph->edge_count, false);
+        r.blockedEdges[f.south1] = true;
+        routes = provider.compute(r);
+        assert(routes.size() == 1);
+        assert(std::abs(routes[0].etaSeconds - 400.0 / settings.rainFactor) < 1e-6);
+
+        // The provider never writes to the shared network (requests run in parallel).
+        for (int e = 0; e < f.net.graph->edge_count; ++e) {
+            assert(f.net.graph->edges[e].traffic_index == 0.0);
+        }
+        f.net.roadClass.clear();
     }
 
     // ---- malformed scenario vectors are rejected ----

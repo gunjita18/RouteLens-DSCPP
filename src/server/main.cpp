@@ -152,6 +152,20 @@ void putRoutes(crow::json::wvalue& out, const std::vector<rl::RouteInfo>& routes
     }
 }
 
+// Where each click landed on the road network, shown on the website. Shared by
+// /api/routes and /api/scenario.
+void putSnapped(crow::json::wvalue& body, const rl::SnapResult& from, const rl::SnapResult& to) {
+    auto put = [&](const char* key, const rl::SnapResult& s) {
+        body["snapped"][key]["node"] = s.node;
+        body["snapped"][key]["lat"] = s.nodePos.lat;
+        body["snapped"][key]["lon"] = s.nodePos.lon;
+        body["snapped"][key]["road_class"] = s.roadClass;
+        body["snapped"][key]["road_distance_m"] = s.roadDistanceM;
+    };
+    put("from", from);
+    put("to", to);
+}
+
 constexpr std::size_t kMaxClosures = 20;
 constexpr double kMinClosureRadiusM = 20.0;
 constexpr double kMaxClosureRadiusM = 2000.0;
@@ -332,7 +346,8 @@ int main() {
     // Connect routing only after the OSM network has loaded. Preview mode
     // (ROUTELENS_PREVIEW=1) keeps its sample provider.
     if (!provider->isPreview() && snapper && network.graph) {
-        provider = std::make_unique<rl::OsmRouteProvider>(network);
+        // With the junction list, routes count major junctions and wait there.
+        provider = std::make_unique<rl::OsmRouteProvider>(network, junctionsLoaded ? &junctions : nullptr);
         CROW_LOG_INFO << "OSM routing provider: "
                       << (provider->available() ? "ready" : "unavailable");
     }
@@ -421,23 +436,10 @@ int main() {
         parsed->fromNode = from.node;
         parsed->toNode = to.node;
 
-        // Where each click landed on the road network, shown on the website.
-        auto addSnapped = [&](crow::json::wvalue& body) {
-            auto put = [&](const char* key, const rl::SnapResult& s) {
-                body["snapped"][key]["node"] = s.node;
-                body["snapped"][key]["lat"] = s.nodePos.lat;
-                body["snapped"][key]["lon"] = s.nodePos.lon;
-                body["snapped"][key]["road_class"] = s.roadClass;
-                body["snapped"][key]["road_distance_m"] = s.roadDistanceM;
-            };
-            put("from", from);
-            put("to", to);
-        };
-
         if (!provider->available()) {
             crow::json::wvalue body;
             body["error"] = "routing engine not connected yet";
-            addSnapped(body);
+            putSnapped(body, from, to);
             return jsonResponse(501, body);
         }
 
@@ -456,7 +458,7 @@ int main() {
         out["scenario"] = parsed->scenario;
         out["preview"] = provider->isPreview();   // true = sample routes, not real
         out["from_cache"] = fromCache;
-        addSnapped(out);
+        putSnapped(out, from, to);
         putRoutes(out, *routes);
         return jsonResponse(200, out);
     });
@@ -468,6 +470,7 @@ int main() {
     // POST /api/scenario  (JSON body)
     //   from_lat, from_lon, to_lat, to_lon           required
     //   w_time, w_distance, w_junctions, w_traffic   optional priorities
+    //   scenario      optional traffic scenario (normal, rush_hour, rain, incident)
     //   closures: [{ lat, lon, radius_m?, mode?, slow_factor? }]  1..20 entries
     //     radius_m    20..2000 m, default 150
     //     mode        "block" (default) or "slow"
@@ -490,6 +493,11 @@ int main() {
                 return std::nullopt;
             }
             const auto& v = body[key];
+            // The traffic scenario is the one text field; its name is checked by
+            // parseRouteRequest like the query parameter of /api/routes.
+            if (key == "scenario" && v.t() == crow::json::type::String) {
+                return std::string(v.s());
+            }
             if (v.t() == crow::json::type::Number) {
                 std::ostringstream ss;
                 ss.precision(17);
@@ -539,6 +547,8 @@ int main() {
 
         crow::json::wvalue out;
         out["scenario"] = "custom";
+        out["traffic_scenario"] = parsed->scenario;   // rain etc., combined with the closures
+        putSnapped(out, from, to);   // docs/scenario_api.md promises it; the website draws it
         out["affected"]["blocked_edges"] = effect.blockedEdges;
         out["affected"]["slowed_edges"] = effect.slowedEdges;
         for (std::size_t i = 0; i < closures.size(); ++i) {

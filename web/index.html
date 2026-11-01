@@ -39,7 +39,29 @@
       </section>
 
       <section>
-        <h2>3. Priorities</h2>
+        <h2>3. What-if: close or slow roads <span class="opt">(optional)</span></h2>
+        <p class="hint">Switch on placing, then click the map where a road is closed or slow. Every road passing within the radius is affected.</p>
+        <button id="place-closures" type="button" aria-pressed="false">Place closures on the map</button>
+        <div id="closure-mode" class="seg" role="radiogroup" aria-label="Closure type">
+          <button type="button" role="radio" aria-checked="true"  data-mode="block">Block road</button>
+          <button type="button" role="radio" aria-checked="false" data-mode="slow">Slow road</button>
+        </div>
+        <label id="slow-label" hidden>Travel time on slowed roads
+          <select id="slow_factor">
+            <option value="1.5">1.5 × longer</option>
+            <option value="2">2 × longer</option>
+            <option value="3" selected>3 × longer</option>
+            <option value="5">5 × longer</option>
+            <option value="10">10 × longer</option>
+          </select></label>
+        <label>Radius of new closures <output id="o_radius">150 m</output>
+          <input id="radius" type="range" min="20" max="1000" step="10" value="150"></label>
+        <ol id="closure-list"></ol>
+        <button id="clear-closures" type="button" hidden>Clear closures</button>
+      </section>
+
+      <section>
+        <h2>4. Priorities</h2>
         <label>Travel time <output id="o_time">50</output>
           <input id="w_time" type="range" min="0" max="100" value="50"></label>
         <label>Distance <output id="o_distance">25</output>
@@ -54,6 +76,7 @@
       <section>
         <h2>Routes</h2>
         <p id="scenario-note" class="hint" hidden></p>
+        <div id="whatif-result" class="impact" role="status" hidden></div>
         <div id="cards" aria-live="polite"><p class="hint">Results appear here.</p></div>
       </section>
 

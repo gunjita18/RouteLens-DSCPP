@@ -1,8 +1,10 @@
 #include "osm_route_provider.hpp"
 
+#include "../algorithms/dijkstra.hpp"
 #include "../algorithms/penalty.hpp"
 #include "../algorithms/scenario.hpp"
 #include "../algorithms/yen.hpp"
+#include "../traffic/scenario.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +15,27 @@
 
 namespace rl {
 namespace {
+
+// Wait at each documented major junction a route passes (docs/TRAFFIC.md
+// section 8: 30 s, provisional until the ETA accuracy study).
+constexpr double kJunctionWaitS = 30.0;
+
+// The fastest route is shown even when it shares most roads with another
+// route, if it is at least this much faster.
+constexpr double kDistinctEtaS = 30.0;
+
+// Speed factor of a traffic scenario on one edge (docs/TRAFFIC.md section 13):
+// 1 = unchanged. Normal and Incident leave speeds alone here; an incident is a
+// road the user blocks or slows with a closure.
+double scenarioSpeed(Scenario scenario, const ScenarioSettings& settings,
+                     const std::string& roadClass) {
+    if (scenario == Scenario::Rain) return settings.rainFactor;
+    if (scenario == Scenario::RushHour) {
+        return isMainRoad(roadClass) ? settings.rushMainFactor
+                                     : settings.rushOtherFactor;
+    }
+    return 1.0;
+}
 
 struct Candidate {
     RouteInfo route;
@@ -62,7 +85,9 @@ int findBestEdge(const Graph* graph, const std::vector<double>& costs,
 }
 
 double normalise(double value, double minimum, double maximum) {
-    if (maximum <= minimum) return 0.0;
+    // Values equal up to rounding (e.g. rain slows every route by the same
+    // factor) must not be stretched to 0 and 1 and decide the ranking.
+    if (maximum - minimum <= 1e-9 * std::max(1.0, std::abs(maximum))) return 0.0;
     return (value - minimum) / (maximum - minimum);
 }
 
@@ -105,23 +130,9 @@ double overlapRatio(const std::vector<int>& first,
 
 }  // namespace
 
-OsmRouteProvider::OsmRouteProvider(const OsmNetwork& network)
-    : network_(network) {
-    const Graph* graph = network_.graph;
-    if (!graph) return;
-
-    degree_.assign(graph->node_count, 0);
-
-    for (int i = 0; i < graph->edge_count; ++i) {
-        const Edge& edge = graph->edges[i];
-        if (edge.from >= 0 && edge.from < graph->node_count) {
-            ++degree_[edge.from];
-        }
-        if (edge.to >= 0 && edge.to < graph->node_count) {
-            ++degree_[edge.to];
-        }
-    }
-}
+OsmRouteProvider::OsmRouteProvider(const OsmNetwork& network,
+                                   const JunctionIndex* junctions)
+    : network_(network), junctions_(junctions) {}
 
 bool OsmRouteProvider::available() const {
     return network_.graph != nullptr &&
@@ -163,18 +174,60 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
              static_cast<std::size_t>(graph->edge_count));
     if (!validScenario) return result;
 
-    ScenarioEffect effect;
-    effect.blocked = request.blockedEdges;
-    effect.durationFactor = request.durationFactor;
-    if (effect.durationFactor.empty()) {
-        effect.durationFactor.assign(graph->edge_count, 1.0);
+    // Closures are physical changes and count in every ETA shown.
+    std::vector<double> closureFactor = request.durationFactor;
+    if (closureFactor.empty()) {
+        closureFactor.assign(graph->edge_count, 1.0);
     }
 
-    const std::vector<double> edgeCosts =
-        scenarioCosts(graph, &weights, effect);
-    if (edgeCosts.size() != static_cast<std::size_t>(graph->edge_count)) {
-        return result;
+    // Traffic scenario speeds per edge. Computed here for each request rather
+    // than with TrafficState, which writes into the shared graph while Crow
+    // serves requests in parallel. The server has validated the name already;
+    // anything else counts as normal.
+    Scenario trafficScenario = Scenario::Normal;
+    parseScenario(request.scenario, trafficScenario);
+    const ScenarioSettings scenarioSettings;
+    std::vector<double> speed(graph->edge_count, 1.0);
+    for (int e = 0; e < graph->edge_count; ++e) {
+        const std::string roadClass =
+            static_cast<std::size_t>(e) < network_.roadClass.size()
+                ? network_.roadClass[e] : std::string();
+        speed[e] = scenarioSpeed(trafficScenario, scenarioSettings, roadClass);
     }
+
+    ScenarioEffect effect;
+    effect.blocked = request.blockedEdges;
+    effect.durationFactor.resize(graph->edge_count);
+    for (int e = 0; e < graph->edge_count; ++e) {
+        effect.durationFactor[e] = closureFactor[e] / speed[e];
+    }
+
+    // The search must see what the ETA counts: congestion from the traffic
+    // scenario and the wait at each major junction. A divided junction has
+    // several nodes, so the wait is charged only on an edge that enters the
+    // junction from outside it, as the ETA counts it once per route.
+    auto costsFor = [&](const Weights& w) {
+        std::vector<double> costs = scenarioCosts(graph, &w, effect);
+        if (costs.size() != static_cast<std::size_t>(graph->edge_count)) {
+            return std::vector<double>();
+        }
+        for (int e = 0; e < graph->edge_count; ++e) {
+            const Edge& edge = graph->edges[e];
+            const double minutes =
+                std::max(0.0, edge.duration_s) / 60.0 * effect.durationFactor[e];
+            costs[e] += w.per_congested_minute * (1.0 - speed[e]) * minutes;
+            if (junctions_) {
+                const int j = junctions_->junctionOf(edge.to);
+                if (j >= 0 && j != junctions_->junctionOf(edge.from)) {
+                    costs[e] += w.per_minute * kJunctionWaitS / 60.0 + w.per_signal;
+                }
+            }
+        }
+        return costs;
+    };
+
+    const std::vector<double> edgeCosts = costsFor(weights);
+    if (edgeCosts.empty()) return result;
     const std::vector<bool>* blocked =
         request.blockedEdges.empty() ? nullptr : &request.blockedEdges;
 
@@ -189,6 +242,31 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
         graph, edgeCosts, request.fromNode, request.toNode, penalty, blocked);
 
     std::vector<std::vector<int>> generatedPaths = penaltyRoutes.paths;
+
+    // The fastest route by the ETA shown, whatever the priorities. Without it
+    // the "fastest" route listed could be beaten by one the weighted search
+    // never produced (a closure once made the listed fastest route faster).
+    // Second in line, so the best route for the user's priorities stays first.
+    Weights timeOnly{};
+    timeOnly.per_minute = 1.0;
+    std::vector<int> fastestPath;
+    const std::vector<double> timeCosts = costsFor(timeOnly);
+    if (!timeCosts.empty()) {
+        const DijkstraResult fastest = dijkstraWithCosts(
+            graph, timeCosts, request.fromNode, request.toNode, blocked);
+        if (fastest.found) fastestPath = fastest.path;
+    }
+    if (!fastestPath.empty() &&
+        (generatedPaths.empty() || generatedPaths.front() != fastestPath)) {
+        // Move it up even when the penalty search found it lower down, where
+        // the overlap filter or the three-route limit could drop it.
+        generatedPaths.erase(
+            std::remove(generatedPaths.begin(), generatedPaths.end(), fastestPath),
+            generatedPaths.end());
+        generatedPaths.insert(
+            generatedPaths.begin() + std::min<std::ptrdiff_t>(1, generatedPaths.size()),
+            fastestPath);
+    }
 
     if (!hasScenario) {
         const YenResult alternatives =
@@ -211,9 +289,12 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
         RouteInfo& route = candidate.route;
         route.name = "Alternative route";
         double durationSeconds = 0.0;
+        double freeFlowSeconds = 0.0;
         double trafficWeightedSeconds = 0.0;
         double totalDistanceM = 0.0;
         double totalTrafficWeight = 0.0;
+        double speedWeightedM = 0.0;
+        std::vector<int> routeEdges;
 
         appendPoint(route, network_.pos[path.front()]);
 
@@ -230,25 +311,23 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
                 break;
             }
 
+            routeEdges.push_back(edgeIndex);
             const Edge& edge = graph->edges[edgeIndex];
-            // Slowed roads take longer; 1.0 when there is no scenario.
+            // Closures and the traffic scenario both scale the travel time;
+            // the "no traffic" ETA leaves out the traffic scenario only.
             const double edgeSeconds = std::max(0.0, edge.duration_s) *
                                        effect.durationFactor[edgeIndex];
+            freeFlowSeconds += std::max(0.0, edge.duration_s) *
+                               closureFactor[edgeIndex];
 
             totalDistanceM += std::max(0.0, edge.distance_m);
             durationSeconds += edgeSeconds;
+            speedWeightedM += speed[edgeIndex] * std::max(0.0, edge.distance_m);
 
-            const double traffic = clampTraffic(edge.traffic_index);
+            const double traffic =
+                clampTraffic(edge.traffic_index + (1.0 - speed[edgeIndex]));
             trafficWeightedSeconds += traffic * edgeSeconds;
             totalTrafficWeight += edgeSeconds;
-
-            // Count internal graph nodes with more than one connected
-            // road in the degree approximation used by this provider.
-            if (i + 1 < path.size() && to >= 0 &&
-                static_cast<std::size_t>(to) < degree_.size() &&
-                degree_[to] > 2) {
-                ++route.junctions;
-            }
 
             if (edgeIndex >= 0 &&
                 static_cast<std::size_t>(edgeIndex) <
@@ -284,19 +363,36 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
             totalTrafficWeight > 0.0
                 ? trafficWeightedSeconds / totalTrafficWeight
                 : 0.0;
-        candidate.rawEta = durationSeconds +
-                           static_cast<double>(route.junctions) * 20.0;
+        // Documented major junctions the route arrives at, each counted once
+        // (the traffic module's rule), with a wait at each.
+        if (junctions_) {
+            route.junctions = static_cast<int>(
+                junctionsOnRoute(network_, *junctions_, routeEdges).size());
+        }
+        const double waitSeconds =
+            static_cast<double>(route.junctions) * kJunctionWaitS;
+        candidate.rawEta = durationSeconds + waitSeconds;
 
         route.distanceKm = candidate.rawDistance;
-        route.freeFlowEtaSeconds = candidate.rawEta;
+        route.freeFlowEtaSeconds = freeFlowSeconds + waitSeconds;
         route.etaSeconds = candidate.rawEta;
 
         // No live or historical traffic is applied by this provider yet.
-        // Do not label the route as live traffic.
+        // Do not label the route as live traffic. A traffic scenario is an
+        // estimate too; its level comes from the traffic module's thresholds.
         route.livePct = 0.0;
         route.typicalPct = 0.0;
         route.estimatedPct = 100.0;
         route.trafficLevel = "Estimated";
+        if (trafficScenario == Scenario::Rain ||
+            trafficScenario == Scenario::RushHour) {
+            const TrafficLevel level =
+                levelForRatio(speedWeightedM / totalDistanceM, TrafficRules{});
+            route.trafficLevel =
+                std::string(levelName(level)) +
+                (trafficScenario == Scenario::Rain ? " (rain estimate)"
+                                                   : " (rush hour estimate)");
+        }
 
         candidates.push_back(std::move(candidate));
     }
@@ -319,7 +415,9 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
     diverseCandidates.reserve(maxRoutes);
 
     for (auto& candidate : candidates) {
-        if (candidate.rawDistance >
+        // The fastest route is never a detour, however long it is.
+        if (candidate.path != fastestPath &&
+            candidate.rawDistance >
             shortestDistance * maxDetourRatio) {
             std::cerr << "[RouteLens] Rejected: detour too long\n";
             continue;
@@ -333,7 +431,12 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
             std::cerr << "[RouteLens] Overlap with accepted route: "
                       << overlap * 100.0 << "%\n";
 
-            if (overlap >= maxSharedOverlap) {
+            // A route mostly on the same roads still counts as different when
+            // it is the fastest and clearly faster: users should see it.
+            const bool clearlyFaster =
+                candidate.path == fastestPath &&
+                candidate.rawEta < accepted.rawEta - kDistinctEtaS;
+            if (overlap >= maxSharedOverlap && !clearlyFaster) {
                 std::cerr << "[RouteLens] Rejected: too much overlap\n";
                 tooSimilar = true;
                 break;
