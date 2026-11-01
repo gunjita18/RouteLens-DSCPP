@@ -15,6 +15,7 @@ JSON body (`Content-Type: application/json`):
 |---|---|---|
 | `from_lat`, `from_lon`, `to_lat`, `to_lon` | yes | Start and destination, inside the Dehradun box |
 | `w_time`, `w_distance`, `w_junctions`, `w_traffic` | no | Priorities, same as `/api/routes` |
+| `scenario` | no | Traffic scenario applied on top of the closures: `normal` (default), `rush_hour`, `rain`, `incident` (same as normal: the closures are the incident) |
 | `closures` | yes | 1 to 20 closure objects (below) |
 
 Closure object:
@@ -42,6 +43,7 @@ curl -s -X POST http://127.0.0.1:18080/api/scenario \
 ```jsonc
 {
   "scenario": "custom",
+  "traffic_scenario": "normal",                     // as sent, default normal
   "snapped":  { "from": {...}, "to": {...} },      // same as /api/routes
   "affected": { "blocked_edges": 32, "slowed_edges": 0 },
   "closures": [ { "lat": ..., "lon": ..., "radius_m": 120, "mode": "block", "edges_affected": 32 } ],
@@ -88,12 +90,15 @@ curl -s -X POST http://127.0.0.1:18080/api/scenario \
 
 ## Relation to the traffic scenarios
 
-`/api/routes?scenario=rain|rush_hour|incident` (traffic module,
-`src/traffic/scenario.*`) changes the **speeds** in the traffic state.
-`/api/scenario` (this document) changes the **routing**: it removes or slows the
-roads around points the user picks and re-runs the route search. The two are
-independent and not combined yet, so a closure here does not use the rain or
-rush-hour speeds.
+`scenario=rain|rush_hour` (on `/api/routes` and here) changes the **speeds**:
+`OsmRouteProvider` scales each road's travel time with the traffic module's
+`ScenarioSettings` (rain x0.88 everywhere; rush hour x0.65 on main roads, x0.85
+elsewhere). It does this per request, without `TrafficState`, because that
+writes into the shared graph. The closures here change the **roads**. The two
+combine: a road's travel time is multiplied by the closure slowdown and divided
+by the scenario speed factor. `incident` changes no speeds: an incident is a
+closure the user places. "ETA (no traffic)" (`free_flow_eta_s`) leaves out the
+scenario speeds but keeps the closures.
 
 ## Limits worth knowing
 
@@ -109,4 +114,4 @@ rush-hour speeds.
 - Closure matching scans every edge once per closure (about 73,000 edges), so
   20 large closures cost a few milliseconds more than a plain route request.
 - Closures only change this request; nothing is stored on the server.
-- Free-flow times only: live TomTom speeds are not combined with scenarios yet.
+- Live TomTom speeds are not used by the routing yet, with or without scenarios.

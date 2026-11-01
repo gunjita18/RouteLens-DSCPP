@@ -3,6 +3,7 @@
 
 #include "route_provider.hpp"
 #include "../data/osm_loader.hpp"
+#include "../traffic/junctions.hpp"
 
 #include <vector>
 
@@ -10,14 +11,18 @@ namespace rl {
 
 class OsmRouteProvider final : public RouteProvider {
 public:
-    explicit OsmRouteProvider(const OsmNetwork& network);
+    // junctions: the documented major junctions (may be null). With them, each
+    // route counts its major junctions and waits there; without, it waits nowhere.
+    // The provider never writes to the network, so concurrent requests are safe.
+    explicit OsmRouteProvider(const OsmNetwork& network,
+                              const JunctionIndex* junctions = nullptr);
 
     bool available() const override;
     std::vector<RouteInfo> compute(const RouteRequest& request) override;
 
 private:
     const OsmNetwork& network_;
-    std::vector<int> degree_;
+    const JunctionIndex* junctions_;
 };
 
 }  // namespace rl

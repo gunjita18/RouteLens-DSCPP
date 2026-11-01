@@ -1,6 +1,8 @@
 #include "preview_provider.hpp"
+#include "../src/traffic/scenario.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <string>
 
@@ -75,6 +77,25 @@ int main() {
     bool slower = true;
     for (size_t i = 0; i < routes.size(); ++i) slower = slower && busy[i].etaSeconds > routes[i].etaSeconds;
     check(slower, "Rush hour makes every sample route slower than normal");
+
+    // The sample factors must match the traffic module's documented defaults.
+    const rl::ScenarioSettings defaults;
+    rl::RouteRequest wet = q;
+    wet.scenario = "rain";
+    auto rainy = preview.compute(wet);
+    bool rainMatches = true;
+    for (size_t i = 0; i < routes.size(); ++i) {
+        rainMatches = rainMatches &&
+                      std::abs(rainy[i].etaSeconds / routes[i].etaSeconds - 1.0 / defaults.rainFactor) < 1e-9;
+    }
+    check(rainMatches, "Rain slows sample routes by the traffic module's rainFactor");
+    bool rushInRange = true;
+    for (size_t i = 0; i < routes.size(); ++i) {
+        const double ratio = busy[i].etaSeconds / routes[i].etaSeconds;
+        rushInRange = rushInRange && ratio >= 1.0 / defaults.rushOtherFactor - 1e-9 &&
+                      ratio <= 1.0 / defaults.rushMainFactor + 1e-9;
+    }
+    check(rushInRange, "Rush hour stays between the traffic module's main-road and other-road factors");
 
     std::cout << "Preview provider tests: " << checks << " checks, " << failures << " failures\n";
     return failures == 0 ? 0 : 1;

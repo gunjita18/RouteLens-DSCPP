@@ -33,11 +33,12 @@ public:
             double speedKph;       // sample free-flow speed
             double junctionsPerKm;
             const char* level;
+            double mainRoadShare;  // sample share of main roads, used by rush hour
         };
         static const Shape shapes[3] = {
-            {"Direct (sample)", 0.0, 28.0, 1.6, "Medium"},
-            {"Via north (sample)", 0.006, 36.0, 0.9, "Low"},
-            {"Via south (sample)", -0.006, 31.0, 1.2, "High"},
+            {"Direct (sample)", 0.0, 28.0, 1.6, "Medium", 0.8},
+            {"Via north (sample)", 0.006, 36.0, 0.9, "Low", 0.5},
+            {"Via south (sample)", -0.006, 31.0, 1.2, "High", 0.3},
         };
 
         std::vector<RouteInfo> routes;
@@ -51,7 +52,7 @@ public:
             r.freeFlowEtaSeconds = r.distanceKm / s.speedKph * 3600.0;
             const double lf = factorFor(s.level);
             levelFactor.push_back(lf);
-            r.etaSeconds = r.freeFlowEtaSeconds * lf * scenarioFactor(q.scenario, k);
+            r.etaSeconds = r.freeFlowEtaSeconds * lf * scenarioFactor(q.scenario, k, s.mainRoadShare);
             r.junctions = std::max(1, static_cast<int>(std::lround(r.distanceKm * s.junctionsPerKm)));
             r.trafficLevel = s.level;
             r.estimatedPct = 100.0;  // nothing here is measured
@@ -101,10 +102,14 @@ private:
         return level == "Low" ? 1.0 : (level == "Medium" ? 1.15 : 1.35);
     }
 
-    // The incident scenario blocks the direct route (index 0) harder than the others.
-    static double scenarioFactor(const std::string& scenario, int route) {
-        if (scenario == "rush_hour") return 1.3;
-        if (scenario == "rain") return 1.15;
+    // Speed factors are the defaults of rl::ScenarioSettings in
+    // src/traffic/scenario.hpp (rain 0.88; rush hour 0.65 on main roads, 0.85
+    // elsewhere); travel time grows by 1 / factor. Keep them in step with that file.
+    // The incident scenario slows the direct route (index 0) harder than the others.
+    static double scenarioFactor(const std::string& scenario, int route, double mainRoadShare) {
+        constexpr double kRain = 0.88, kRushMain = 0.65, kRushOther = 0.85;
+        if (scenario == "rush_hour") return mainRoadShare / kRushMain + (1.0 - mainRoadShare) / kRushOther;
+        if (scenario == "rain") return 1.0 / kRain;
         if (scenario == "incident") return route == 0 ? 1.6 : 1.1;
         return 1.0;
     }

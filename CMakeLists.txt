@@ -157,12 +157,13 @@ add_executable(test_scenario tests/test_scenario.cpp)
 target_link_libraries(test_scenario PRIVATE routelens_osm)
 target_compile_options(test_scenario PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME ClosureTests COMMAND test_scenario)
-# Route provider: penalty + Yen candidates, blocked and slowed roads
+# Route provider: penalty + Yen candidates, blocked and slowed roads, major
+# junctions and traffic scenarios (those come from routelens_traffic)
 add_executable(test_route_provider
     tests/test_route_provider.cpp
     src/server/osm_route_provider.cpp
 )
-target_link_libraries(test_route_provider PRIVATE routelens_osm)
+target_link_libraries(test_route_provider PRIVATE routelens_traffic)
 target_compile_options(test_route_provider PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RouteProviderTests COMMAND test_route_provider)
 # Algorithm evaluation harness (see evaluation/run_evaluation.sh)

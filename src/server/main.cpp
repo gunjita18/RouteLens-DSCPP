@@ -21,6 +21,7 @@
 #include "../data/http_client.hpp"
 #include "../data/osm_loader.hpp"
 #include "../spatial/road_snapper.hpp"
+#include "../traffic/junctions.hpp"
 #include "../traffic/lru_cache.hpp"
 #include "../traffic/rate_limiter.hpp"
 #include "../traffic/tomtom_client.hpp"
@@ -39,6 +40,12 @@ std::string dataDir() {
     return d ? d : "data/osm";
 }
 
+// Major-junction list (override with ROUTELENS_JUNCTIONS_FILE).
+std::string junctionsFile() {
+    const char* f = std::getenv("ROUTELENS_JUNCTIONS_FILE");
+    return f ? f : "data/junctions/major_junctions.csv";
+}
+
 // Directory for the TomTom daily-usage counter (override with ROUTELENS_CACHE_DIR).
 // It must be writable; in Docker mount a volume there to keep the count across restarts.
 std::string cacheDir() {
@@ -48,6 +55,10 @@ std::string cacheDir() {
 
 // A click farther than this from any road is rejected.
 constexpr double kMaxSnapMeters = 500.0;
+
+// A major junction claims every graph node within this distance (the radius
+// docs/TRAFFIC.md gives for the server; 41 of 41 junctions snap with it).
+constexpr double kJunctionRadiusMeters = 50.0;
 
 // Bind address and port. Defaults keep the server local-only; the Docker image
 // sets ROUTELENS_BIND=0.0.0.0 so the container port can be published.
@@ -139,6 +150,20 @@ void putRoutes(crow::json::wvalue& out, const std::vector<rl::RouteInfo>& routes
             ++j;
         }
     }
+}
+
+// Where each click landed on the road network, shown on the website. Shared by
+// /api/routes and /api/scenario.
+void putSnapped(crow::json::wvalue& body, const rl::SnapResult& from, const rl::SnapResult& to) {
+    auto put = [&](const char* key, const rl::SnapResult& s) {
+        body["snapped"][key]["node"] = s.node;
+        body["snapped"][key]["lat"] = s.nodePos.lat;
+        body["snapped"][key]["lon"] = s.nodePos.lon;
+        body["snapped"][key]["road_class"] = s.roadClass;
+        body["snapped"][key]["road_distance_m"] = s.roadDistanceM;
+    };
+    put("from", from);
+    put("to", to);
 }
 
 constexpr std::size_t kMaxClosures = 20;
@@ -233,7 +258,9 @@ int main() {
 
     // Protects /api/routes (and so the TomTom quota behind it) from request
     // floods: more than 10 requests in one second get HTTP 429.
-    rl::RateLimiter routeLimiter(10, std::chrono::seconds(1));
+    constexpr int kRouteRequestsPerWindow = 10;
+    constexpr int kRouteWindowSeconds = 1;
+    rl::RateLimiter routeLimiter(kRouteRequestsPerWindow, std::chrono::seconds(kRouteWindowSeconds));
     std::atomic<int> rejectedRequests{0};
     // Route results are cached for 5 minutes (same TTL as the traffic client), so
     // repeating a query neither recomputes routes nor spends TomTom requests.
@@ -296,15 +323,36 @@ int main() {
         }
     }
 
+    // Major junctions (list owned by the traffic module), snapped onto the road
+    // network once at startup and only read afterwards, so requests can share it
+    // without a lock. The routing engine passes it to rl::summarizeRoute() to
+    // count the junctions on each route. Without the file the server still runs.
+    rl::JunctionIndex junctions;
+    bool junctionsLoaded = false;
+    if (snapper) {
+        std::string jErr;
+        const std::string file = junctionsFile();
+        junctionsLoaded = rl::loadJunctions(file, network, kJunctionRadiusMeters, junctions, jErr);
+        if (junctionsLoaded) {
+            CROW_LOG_INFO << "major junctions loaded from " << file << ": "
+                          << junctions.junctions.size() - junctions.unsnapped << " of "
+                          << junctions.junctions.size() << " snapped onto the road network, "
+                          << junctions.skippedNoCoords << " pending (no coordinates)";
+        } else {
+            CROW_LOG_WARNING << "major junctions NOT loaded from " << file << ": " << jErr;
+        }
+    }
+
     // Connect routing only after the OSM network has loaded. Preview mode
     // (ROUTELENS_PREVIEW=1) keeps its sample provider.
     if (!provider->isPreview() && snapper && network.graph) {
-        provider = std::make_unique<rl::OsmRouteProvider>(network);
+        // With the junction list, routes count major junctions and wait there.
+        provider = std::make_unique<rl::OsmRouteProvider>(network, junctionsLoaded ? &junctions : nullptr);
         CROW_LOG_INFO << "OSM routing provider: "
                       << (provider->available() ? "ready" : "unavailable");
     }
 
-   CROW_ROUTE(app, "/api/health")
+    CROW_ROUTE(app, "/api/health")
     ([&] {
         crow::json::wvalue response;
         response["status"] = "ok";
@@ -315,6 +363,12 @@ int main() {
             response["network"]["nodes"] = network.stats.keptNodes;
             response["network"]["edges"] = network.stats.keptEdges;
         }
+        response["junctions"]["loaded"] = junctionsLoaded;
+        if (junctionsLoaded) {
+            response["junctions"]["count"] = static_cast<int>(junctions.junctions.size());
+            response["junctions"]["snapped"] = static_cast<int>(junctions.junctions.size()) - junctions.unsnapped;
+            response["junctions"]["pending"] = junctions.skippedNoCoords;
+        }
         return response;
     });
 
@@ -324,8 +378,8 @@ int main() {
         response["source"] = trafficUsable ? "live" : "free_flow_fallback";
         response["api_key_configured"] = trafficKeyConfigured;
         // Limit on incoming /api/routes requests.
-        response["rate_limit"]["max_requests"] = 10;
-        response["rate_limit"]["window_seconds"] = 1;
+        response["rate_limit"]["max_requests"] = kRouteRequestsPerWindow;
+        response["rate_limit"]["window_seconds"] = kRouteWindowSeconds;
         response["rate_limit"]["current_count"] = routeLimiter.current_count();
         response["rate_limit"]["rejected_total"] = rejectedRequests.load();
         {
@@ -382,23 +436,10 @@ int main() {
         parsed->fromNode = from.node;
         parsed->toNode = to.node;
 
-        // Where each click landed on the road network, shown on the website.
-        auto addSnapped = [&](crow::json::wvalue& body) {
-            auto put = [&](const char* key, const rl::SnapResult& s) {
-                body["snapped"][key]["node"] = s.node;
-                body["snapped"][key]["lat"] = s.nodePos.lat;
-                body["snapped"][key]["lon"] = s.nodePos.lon;
-                body["snapped"][key]["road_class"] = s.roadClass;
-                body["snapped"][key]["road_distance_m"] = s.roadDistanceM;
-            };
-            put("from", from);
-            put("to", to);
-        };
-
         if (!provider->available()) {
             crow::json::wvalue body;
             body["error"] = "routing engine not connected yet";
-            addSnapped(body);
+            putSnapped(body, from, to);
             return jsonResponse(501, body);
         }
 
@@ -417,7 +458,7 @@ int main() {
         out["scenario"] = parsed->scenario;
         out["preview"] = provider->isPreview();   // true = sample routes, not real
         out["from_cache"] = fromCache;
-        addSnapped(out);
+        putSnapped(out, from, to);
         putRoutes(out, *routes);
         return jsonResponse(200, out);
     });
@@ -429,6 +470,7 @@ int main() {
     // POST /api/scenario  (JSON body)
     //   from_lat, from_lon, to_lat, to_lon           required
     //   w_time, w_distance, w_junctions, w_traffic   optional priorities
+    //   scenario      optional traffic scenario (normal, rush_hour, rain, incident)
     //   closures: [{ lat, lon, radius_m?, mode?, slow_factor? }]  1..20 entries
     //     radius_m    20..2000 m, default 150
     //     mode        "block" (default) or "slow"
@@ -451,6 +493,11 @@ int main() {
                 return std::nullopt;
             }
             const auto& v = body[key];
+            // The traffic scenario is the one text field; its name is checked by
+            // parseRouteRequest like the query parameter of /api/routes.
+            if (key == "scenario" && v.t() == crow::json::type::String) {
+                return std::string(v.s());
+            }
             if (v.t() == crow::json::type::Number) {
                 std::ostringstream ss;
                 ss.precision(17);
@@ -500,6 +547,8 @@ int main() {
 
         crow::json::wvalue out;
         out["scenario"] = "custom";
+        out["traffic_scenario"] = parsed->scenario;   // rain etc., combined with the closures
+        putSnapped(out, from, to);   // docs/scenario_api.md promises it; the website draws it
         out["affected"]["blocked_edges"] = effect.blockedEdges;
         out["affected"]["slowed_edges"] = effect.slowedEdges;
         for (std::size_t i = 0; i < closures.size(); ++i) {
