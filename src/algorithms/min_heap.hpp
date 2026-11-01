@@ -2,6 +2,7 @@
 #define RL_MIN_HEAP_HPP
 
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace rl {
