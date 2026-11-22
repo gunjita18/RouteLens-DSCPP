@@ -92,6 +92,7 @@ add_library(routelens_osm STATIC
     src/algorithms/route_ranking.cpp
 )
 target_compile_options(routelens_osm PRIVATE -Wall -Wextra)
+target_link_libraries(routelens_osm PUBLIC routelens_ds)
 
 # Runs on a small built-in network; also checks the real Dehradun CSVs when
 # data/osm/nodes.csv and edges.csv are present (they are not in git).
@@ -131,7 +132,8 @@ target_compile_options(routelens_osm_info PRIVATE -Wall -Wextra -pedantic)
 add_executable(test_osm tests/test_osm.cpp)
 target_link_libraries(test_osm PRIVATE routelens_osm)
 target_compile_options(test_osm PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME OsmLoaderTests COMMAND test_osm)
+add_test(NAME OsmLoaderTests COMMAND test_osm
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 # Dijkstra shortest-path tests
 add_executable(test_dijkstra tests/test_dijkstra.cpp)
 target_link_libraries(test_dijkstra PRIVATE routelens_osm)
@@ -232,4 +234,25 @@ foreach(_rl_target IN LISTS _rl_all_targets)
     if(_rl_target MATCHES "^test_")
         target_compile_options(${_rl_target} PRIVATE -UNDEBUG)
     endif()
+endforeach()
+
+# ---------------------------------------------------------------- Hand-written C data structures
+# Pure C11, no STL. One .c/.h pair per structure, one test file per structure.
+add_library(routelens_ds STATIC
+    src/core/dynarray.c
+    src/core/list.c
+    src/core/hashtable.c
+    src/core/queue.c
+    src/core/bfs.c
+)
+target_include_directories(routelens_ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
+
+foreach(ds_test dynarray list hashtable queue bfs)
+    add_executable(test_${ds_test} tests/test_${ds_test}.c)
+    target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
+    target_compile_options(test_${ds_test} PRIVATE -Wall -Wextra -pedantic)
+    # WORKING_DIRECTORY = repo root so test_hashtable can find data/osm/nodes.csv
+    add_test(NAME ${ds_test}_test COMMAND test_${ds_test}
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
