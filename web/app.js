@@ -279,6 +279,7 @@
       render(body.routes || [], note);
       drawSnapped(body.snapped);
       setPreview(body.preview === true);
+      showTrafficData(body.traffic_data);
     });
   }
 
@@ -309,6 +310,7 @@
         res.message ? 'No route avoids these closures.' : undefined);   // the reason is in the impact box
       drawSnapped(res.snapped);
       showImpact(res);
+      showTrafficData(res.traffic_data);
     });
   }
 
@@ -514,25 +516,38 @@
     });
   }
 
-  // ---- traffic status badge --------------------------------------------
-  function refreshTraffic() {
-    fetch('/api/traffic/status')
-      .then(function (r) { return r.json(); })
-      .then(function (s) {
-        // The server never calls TomTom: it reads a snapshot saved earlier, so the
-        // page shows when that data was taken instead of calling it "live".
-        $('traffic-badge').textContent = s.source === 'snapshot'
-          ? 'Traffic data: ' + (s.fetched_at || 'time unknown') + ' (saved snapshot)'
-          : 'Traffic: estimated (free-flow speeds)';
-      })
-      .catch(function () { $('traffic-badge').textContent = 'server offline'; });
-  }
-  refreshTraffic();
-  setInterval(refreshTraffic, 30000);
+  // ---- "Traffic data: <time>" badge -------------------------------------
+  // The server sends traffic_data = { source, fetched_at }. "snapshot" means
+  // the routes use the TomTom snapshot fetched at that time; "estimated"
+  // means free-flow speeds (no snapshot used).
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-  // If the server runs in preview mode, warn from the very first screen.
+  // "2026-11-10 09:30" -> "10 Nov, 9:30 AM". Other formats are shown as given.
+  function formatSnapshotTime(text) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(text || '');
+    if (!m || +m[2] < 1 || +m[2] > 12) { return text; }
+    var h = +m[4];
+    var ampm = h < 12 ? 'AM' : 'PM';
+    h = h % 12 === 0 ? 12 : h % 12;
+    return (+m[3]) + ' ' + MONTHS[+m[2] - 1] + ', ' + h + ':' + m[5] + ' ' + ampm;
+  }
+
+  function showTrafficData(td) {
+    if (!td) { return; }
+    if (td.source === 'snapshot') {
+      $('traffic-badge').textContent = 'Traffic data: ' +
+        (td.fetched_at ? formatSnapshotTime(td.fetched_at) : 'snapshot (time unknown)');
+    } else {
+      $('traffic-badge').textContent = 'Traffic data: estimated (free-flow speeds)';
+    }
+  }
+
+  // First screen: preview warning and traffic-data label from /api/health.
   fetch('/api/health')
     .then(function (r) { return r.json(); })
-    .then(function (h) { setPreview(h.preview === true); })
-    .catch(function () { /* the traffic badge already reports an offline server */ });
+    .then(function (h) {
+      setPreview(h.preview === true);
+      showTrafficData(h.traffic_data);
+    })
+    .catch(function () { $('traffic-badge').textContent = 'Server offline'; });
 })();

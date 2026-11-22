@@ -17,8 +17,10 @@
 #include "request_params.hpp"
 #include "route_provider.hpp"
 #include "osm_route_provider.hpp"
+#include "traffic_data.hpp"
 #include "../algorithms/scenario.hpp"
 #include "../data/osm_loader.hpp"
+#include "../oop/scenario.hpp"
 #include "../oop/traffic_provider.hpp"
 #include "../spatial/road_snapper.hpp"
 #include "../traffic/junctions.hpp"
@@ -162,6 +164,30 @@ void putSnapped(crow::json::wvalue& body, const rl::SnapResult& from, const rl::
     };
     put("from", from);
     put("to", to);
+}
+
+// "Traffic data: <time>" on the website. source is "snapshot" only when the
+// routes were computed with the snapshot; otherwise "estimated" (free-flow).
+void putTrafficData(crow::json::wvalue& body, const rl::TrafficDataInfo& info) {
+    body["traffic_data"]["source"] = info.source();
+    if (info.usedByRouting && info.snapshotFound && !info.fetchedAt.empty()) {
+        body["traffic_data"]["fetched_at"] = info.fetchedAt;
+    } else {
+        body["traffic_data"]["fetched_at"] = nullptr;
+    }
+}
+
+// The label for one request: Rain and Rush hour start from free-flow speeds and
+// ignore the snapshot (the traffic module's rule), so their answers say
+// "estimated" even when a snapshot is loaded.
+rl::TrafficDataInfo trafficDataFor(const rl::TrafficDataInfo& loaded, const std::string& scenario) {
+    rl::TrafficDataInfo info = loaded;
+    rl::ScenarioKind kind = rl::ScenarioKind::Normal;
+    rl::parseScenario(scenario, kind);
+    if (!rl::scenarioNeedsLiveTraffic(kind)) {
+        info.usedByRouting = false;
+    }
+    return info;
 }
 
 // Place-name search limits for /api/places.
@@ -350,6 +376,12 @@ int main() {
                       << (provider->available() ? "ready" : "unavailable");
     }
 
+    // What the website's "Traffic data" label says (per request, see trafficDataFor).
+    rl::TrafficDataInfo trafficData;
+    trafficData.snapshotFound = trafficIsSnapshot;
+    trafficData.fetchedAt = traffic->fetchedAt();
+    trafficData.usedByRouting = trafficIsSnapshot && provider->available() && !provider->isPreview();
+
     CROW_ROUTE(app, "/api/health")
     ([&] {
         crow::json::wvalue response;
@@ -368,6 +400,7 @@ int main() {
             response["junctions"]["pending"] = junctions.skippedNoCoords;
         }
         response["places"] = static_cast<int>(places.size());
+        putTrafficData(response, trafficData);
         return response;
     });
 
@@ -470,6 +503,7 @@ int main() {
         crow::json::wvalue out;
         out["scenario"] = parsed->scenario;
         out["preview"] = provider->isPreview();   // true = sample routes, not real
+        putTrafficData(out, trafficDataFor(trafficData, parsed->scenario));
         putSnapped(out, from, to);
         putRoutes(out, routes);
         return jsonResponse(200, out);
@@ -554,6 +588,7 @@ int main() {
         crow::json::wvalue out;
         out["scenario"] = "custom";
         out["traffic_scenario"] = parsed->scenario;   // rain etc., combined with the closures
+        putTrafficData(out, trafficDataFor(trafficData, parsed->scenario));
         putSnapped(out, from, to);   // docs/scenario_api.md promises it; the website draws it
         out["affected"]["blocked_edges"] = effect.blockedEdges;
         out["affected"]["slowed_edges"] = effect.slowedEdges;

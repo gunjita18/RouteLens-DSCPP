@@ -48,6 +48,16 @@ add_test(NAME RequestParamsTests COMMAND test_request_params)
 
 find_package(Threads REQUIRED)
 
+# "Traffic data: <time>" label rule.
+add_executable(test_traffic_data
+    tests/test_traffic_data.cpp
+)
+target_include_directories(test_traffic_data PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+)
+target_compile_options(test_traffic_data PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME TrafficDataLabelTests COMMAND test_traffic_data)
+
 # Interface-preview provider (sample routes, clearly labelled).
 add_executable(test_preview_provider
     tests/test_preview_provider.cpp
