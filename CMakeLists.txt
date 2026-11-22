@@ -247,11 +247,12 @@ add_library(routelens_ds STATIC
     src/core/bfs.c
     src/core/traffic_reader.c
     src/core/search.c
+    src/core/dsu.c
 )
 target_include_directories(routelens_ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
 
-foreach(ds_test dynarray list hashtable queue bfs traffic_reader search)
+foreach(ds_test dynarray list hashtable queue bfs traffic_reader search dsu)
     add_executable(test_${ds_test} tests/test_${ds_test}.c)
     target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
     target_compile_options(test_${ds_test} PRIVATE -Wall -Wextra -pedantic)

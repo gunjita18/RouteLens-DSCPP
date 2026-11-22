@@ -13,6 +13,7 @@ It does **not** contain any routing algorithm.
 | `src/core/graph.h`, `graph.c` | Directed graph (forward-star adjacency list), the shared interface |
 | `src/core/hashtable.*`, `list.*`, `dynarray.*`, `queue.*` | Hand-written C data structures used by the loader (see below) |
 | `src/core/bfs.h`, `bfs.c` | Forward and reverse breadth-first search; graph cleaning |
+| `src/core/dsu.h`, `dsu.c` | Union-find; counts the weakly connected parts of the raw network (check only) |
 | `src/data/osm_loader.hpp`, `.cpp` | Loads the CSVs into a `Graph`: C hash table for ID mapping, BFS cleaning, free-flow times |
 | `src/app/osm_info_main.cpp` | Prints load statistics and checks the cleaning result against NetworkX |
 | `tests/test_osm.cpp`, `test_bfs.c`, `test_hashtable.c`, ... | Unit tests (one file per structure, plus the loader) |
@@ -54,6 +55,8 @@ hashing, separate chaining, rehash when the load factor exceeds 0.75), wrapped i
 - After loading (strongly connected core): **31,802 nodes, 72,626 edges**
 - Verified: the BFS cleaning keeps exactly the node count of NetworkX's largest strongly
   connected component (31,802, recorded in `meta.txt`); `test_osm` and `routelens_osm_info` check it
+- Independent check: union-find over the raw edges (direction ignored) finds 72 weakly connected
+  parts, the same as NetworkX. It does not take part in cleaning; it only confirms the input data.
 - Known data gaps: only 6 traffic signals are mapped in OSM; 98% of edges have no
   `maxspeed` tag, so free-flow times use provisional defaults (below)
 

@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "../core/bfs.h"
+#include "../core/dsu.h"
 
 namespace rl {
 
@@ -240,6 +241,17 @@ bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err,
         e.highway = f[3];
         e.maxspeed = f[4];
         raw.push_back(std::move(e));
+    }
+
+    // ---- 2b. weakly connected parts (union-find, core/dsu.c): edge direction
+    // ignored. Not used for cleaning; it is reported so the result can be checked
+    // against NetworkX independently of the BFS.
+    {
+        Dsu dsu;
+        if (dsu_init(&dsu, st.rawNodes) != 0) { err = "out of memory counting connected parts"; return false; }
+        for (const RawEdge& e : raw) dsu_union(&dsu, e.u, e.v);
+        st.weakComponents = dsu_sets(&dsu);
+        dsu_free(&dsu);
     }
 
     // ---- 3. graph cleaning: forward + reverse BFS (core/bfs.c)

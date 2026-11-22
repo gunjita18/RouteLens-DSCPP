@@ -66,6 +66,7 @@ static void testLoader() {
     CHECK(s.selfLoops == 1);
     CHECK(s.badRows == 2);            // unknown node 999 + bad length
     CHECK(s.keptNodes == 3);          // triangle only
+    CHECK(s.weakComponents == 2);     // {1,2,3,4} (4 is linked, one-way) and {5} (self-loop only)
     CHECK(s.keptEdges == 5);
     CHECK(s.droppedEdges == 1);       // 3->4 leaves the SCC
     CHECK(s.signalNodes == 1);
@@ -163,6 +164,7 @@ static void testRealNetwork() {
     CHECK(loadOsmNetwork("data/osm", net, err));
     CHECK(net.stats.rawNodes == 32110);
     CHECK(net.stats.keptNodes == 31802);                 // NetworkX result in meta.txt
+    CHECK(net.stats.weakComponents == 72);               // NetworkX weakly connected components
     CHECK(net.graph && net.graph->node_count == 31802);
     CHECK(net.indexOf.size() == 31802);
     for (size_t i = 0; i < net.osmId.size(); i += 97) CHECK(net.indexOf.find(net.osmId[i]) == (int)i);

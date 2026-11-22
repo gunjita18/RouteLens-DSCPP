@@ -60,6 +60,8 @@ struct OsmLoadStats {
     int rawEdges = 0;              // edge rows read (before any filtering)
     int selfLoops = 0;             // u == v, rejected by graph_add_edge
     int badRows = 0;               // malformed or referencing unknown nodes
+    int weakComponents = 0;        // weakly connected parts of the raw network (union-find);
+                                   // an independent check on the cleaning
     int bfsCentre = -1;            // raw index of the node cleaning started from
     int keptNodes = 0;             // size of the kept strongly connected component
     int keptEdges = 0;

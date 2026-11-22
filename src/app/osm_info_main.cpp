@@ -66,9 +66,18 @@ int main(int argc, char** argv) {
         std::cout << "CHECK skipped: no largest_scc_nodes in meta.txt\n";
     } else {
         bool pass = expectNodes == s.keptNodes;
-        ok = pass;
+        ok = ok && pass;
         std::cout << (pass ? "CHECK PASS" : "CHECK FAIL") << ": kept " << s.keptNodes
                   << " nodes (NetworkX largest SCC " << expectNodes << ")\n";
+    }
+    long expectWeak = readMetaInt(dir + "/meta.txt", "weakly_connected_components");
+    if (expectWeak < 0) {
+        std::cout << "CHECK skipped: no weakly_connected_components in meta.txt\n";
+    } else {
+        bool pass = expectWeak == s.weakComponents;
+        ok = ok && pass;
+        std::cout << (pass ? "CHECK PASS" : "CHECK FAIL") << ": " << s.weakComponents
+                  << " weakly connected parts, union-find (NetworkX " << expectWeak << ")\n";
     }
 
     return ok ? 0 : 1;
