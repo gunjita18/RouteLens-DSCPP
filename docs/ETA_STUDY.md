@@ -1,5 +1,8 @@
 # ETA accuracy study
 
+> If no timed trips are available, see `docs/ETA_CROSS_CHECK.md`: a plausibility check against
+> another routing engine and published speeds. It is not a substitute for this study.
+
 **Question.** How close is RouteLens's predicted travel time to the time a real trip takes?
 The road-class speeds (20 km/h on residential roads and so on) and the 30 s wait at each
 junction are provisional assumptions; this study measures how wrong they are.

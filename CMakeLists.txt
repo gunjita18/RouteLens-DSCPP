@@ -273,3 +273,10 @@ if(Python3_Interpreter_FOUND)
              COMMAND ${Python3_EXECUTABLE} evaluation/test_eta_study.py
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+
+# Offline unit tests for evaluation/eta_reference.py (no server, no network, no API key).
+if(Python3_Interpreter_FOUND)
+    add_test(NAME eta_reference_test
+             COMMAND ${Python3_EXECUTABLE} evaluation/test_eta_reference.py
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
