@@ -44,10 +44,16 @@
   // ---- point selection -------------------------------------------------
   map.on('click', function (e) {
     if (placing) { addClosure(e.latlng); return; }
-    if (points.length >= 2) { return; }
-    points.push({ lat: e.latlng.lat, lon: e.latlng.lng });
+    addPoint(e.latlng);
+  });
+
+  // Sets Start (first call) or End (second call); used by map clicks and the
+  // place search box. Returns false if both points are already set.
+  function addPoint(latlng) {
+    if (points.length >= 2) { return false; }
+    points.push({ lat: latlng.lat, lon: latlng.lng });
     var idx = points.length - 1;
-    var marker = L.marker(e.latlng, { draggable: true, title: 'Drag to move' })
+    var marker = L.marker(latlng, { draggable: true, title: 'Drag to move' })
       .bindTooltip(idx === 0 ? 'Start' : 'End', { permanent: true }).addTo(map);
     // Dragging a marker moves that point and, once both are set, recomputes the routes.
     marker.on('dragend', function () {
@@ -58,7 +64,59 @@
     });
     markers.push(marker);
     updatePointsInfo();
+    return true;
+  }
+
+  // ---- place search (trie autocomplete on the server) -------------------
+  var searchTimer = null;
+  var searchSeq = 0;   // only the newest answer may fill the list
+
+  $('place-search').addEventListener('input', function () {
+    clearTimeout(searchTimer);
+    var prefix = $('place-search').value.trim();
+    if (!prefix) { showPlaces(null); return; }
+    // Wait until typing pauses for 150 ms, so not every key sends a request.
+    searchTimer = setTimeout(function () { searchPlaces(prefix); }, 150);
   });
+
+  function searchPlaces(prefix) {
+    var mySeq = ++searchSeq;
+    fetch('/api/places?' + new URLSearchParams({ prefix: prefix, limit: 8 }).toString())
+      .then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
+      .then(function (res) {
+        if (mySeq !== searchSeq) { return; }
+        showPlaces(res.status === 200 ? res.body.places : [], res.body.error);
+      })
+      .catch(function () { if (mySeq === searchSeq) { showPlaces([], 'Cannot reach the RouteLens server.'); } });
+  }
+
+  // places: null hides the list; [] shows "no match" (or the error text).
+  function showPlaces(places, error) {
+    var list = $('place-results');
+    list.textContent = '';
+    if (places === null) { list.hidden = true; return; }
+    if (!places.length) {
+      list.appendChild(el('li', 'none', error || 'No major junction starts with that.'));
+    }
+    places.forEach(function (p) {
+      var li = el('li');
+      var b = el('button', null, p.name);
+      b.type = 'button';
+      b.addEventListener('click', function () {
+        var ll = L.latLng(p.lat, p.lon);
+        if (!addPoint(ll)) {
+          showBanner('Start and End are both set. Press "Reset points" to pick again.');
+          return;
+        }
+        map.panTo(ll);
+        $('place-search').value = '';
+        showPlaces(null);
+      });
+      li.appendChild(b);
+      list.appendChild(li);
+    });
+    list.hidden = false;
+  }
 
   $('reset').addEventListener('click', function () {
     points = [];

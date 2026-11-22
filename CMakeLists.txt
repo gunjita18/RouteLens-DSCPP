@@ -16,6 +16,27 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
+# ---------------------------------------------------------------- hand-written C core (Aayush, Phase III)
+# Add each C test with one line:  routelens_c_test(test_name tests/test_name.c)
+# It builds the test against routelens_core, registers it with CTest (label
+# "c_core") and runs it from the repo root (so tests can find data/osm/*.csv).
+add_library(routelens_core STATIC
+    src/core/trie.c
+)
+target_include_directories(routelens_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+target_compile_options(routelens_core PRIVATE -Wall -Wextra -pedantic)
+
+function(routelens_c_test name)
+    add_executable(${name} ${ARGN})
+    target_link_libraries(${name} PRIVATE routelens_core)
+    target_compile_options(${name} PRIVATE -Wall -Wextra -pedantic)
+    add_test(NAME ${name} COMMAND ${name} WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(${name} PROPERTIES LABELS c_core)
+endfunction()
+
+# Trie for place-name autocomplete (/api/places, search box on the website)
+routelens_c_test(test_trie tests/test_trie.c)
+
 add_executable(test_request_params
     tests/test_request_params.cpp
 )
@@ -70,7 +91,7 @@ add_executable(routelens_server
     src/server/main.cpp
     src/server/osm_route_provider.cpp
 )
-target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic)
+target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic routelens_core)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
 
 

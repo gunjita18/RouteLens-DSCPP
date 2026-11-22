@@ -12,6 +12,7 @@
 #include <string>
 
 #include "crow.h"
+#include "place_index.hpp"
 #include "preview_provider.hpp"
 #include "request_params.hpp"
 #include "route_provider.hpp"
@@ -163,6 +164,11 @@ void putSnapped(crow::json::wvalue& body, const rl::SnapResult& from, const rl::
     put("to", to);
 }
 
+// Place-name search limits for /api/places.
+constexpr std::size_t kMaxPrefixLength = 40;
+constexpr int kDefaultPlaceResults = 8;
+constexpr int kMaxPlaceResults = 20;
+
 constexpr std::size_t kMaxClosures = 20;
 constexpr double kMinClosureRadiusM = 20.0;
 constexpr double kMaxClosureRadiusM = 2000.0;
@@ -307,6 +313,15 @@ int main() {
         }
     }
 
+    // Place-name search box: the junction names go into the C trie once.
+    rl::PlaceIndex places;
+    for (const rl::Junction& j : junctions.junctions) {
+        if (!places.add(j.name, j.pos)) {
+            CROW_LOG_WARNING << "place name not added to the search box: " << j.name;
+        }
+    }
+    CROW_LOG_INFO << "place search: " << places.size() << " names";
+
     // Measured traffic: the saved snapshot (preprocess/fetch_traffic.py), read once
     // at startup. The server never calls TomTom, so it works offline. A missing or
     // unreadable file is not fatal: the provider falls back to free-flow speeds and
@@ -352,6 +367,7 @@ int main() {
             response["junctions"]["snapped"] = static_cast<int>(junctions.junctions.size()) - junctions.unsnapped;
             response["junctions"]["pending"] = junctions.skippedNoCoords;
         }
+        response["places"] = static_cast<int>(places.size());
         return response;
     });
 
@@ -367,6 +383,47 @@ int main() {
         response["edges_with_data"] = traffic->edgesWithData();
         response["warning"] = trafficWarning;
         return response;
+    });
+
+    // Place-name autocomplete for the search box (C trie).
+    //   GET /api/places?prefix=Cl[&limit=8]
+    //   prefix  1..40 printable ASCII characters, any letter case
+    //   limit   1..20, default 8
+    // Answers {"places": [{"name", "lat", "lon"}, ...]} in alphabetical order.
+    CROW_ROUTE(app, "/api/places")
+    ([&](const crow::request& req) {
+        const char* prefixParam = req.url_params.get("prefix");
+        if (prefixParam == nullptr || prefixParam[0] == '\0') {
+            return jsonError(400, "prefix is required");
+        }
+        const std::string prefix(prefixParam);
+        if (prefix.size() > kMaxPrefixLength) {
+            return jsonError(400, "prefix must be at most 40 characters");
+        }
+        for (unsigned char c : prefix) {
+            if (c < 0x20 || c > 0x7e) {
+                return jsonError(400, "prefix must be plain text (ASCII letters, digits, spaces)");
+            }
+        }
+        int limit = kDefaultPlaceResults;
+        if (const char* l = req.url_params.get("limit")) {
+            char* end = nullptr;
+            const long v = std::strtol(l, &end, 10);
+            if (end == l || *end != '\0' || v < 1 || v > kMaxPlaceResults) {
+                return jsonError(400, "limit must be a whole number from 1 to 20");
+            }
+            limit = static_cast<int>(v);
+        }
+        crow::json::wvalue out;
+        out["places"] = crow::json::wvalue::list();
+        std::size_t i = 0;
+        for (const rl::Place& p : places.search(prefix, limit)) {
+            out["places"][i]["name"] = p.name;
+            out["places"][i]["lat"] = p.pos.lat;
+            out["places"][i]["lon"] = p.pos.lon;
+            ++i;
+        }
+        return jsonResponse(200, out);
     });
 
     CROW_ROUTE(app, "/api/routes")
