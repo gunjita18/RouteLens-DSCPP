@@ -84,6 +84,8 @@ public:
     IdIndex indexOf;                                 // OSM id -> node index
     std::vector<std::vector<LatLon>> geometry;       // edge index -> road shape
     std::vector<std::string> roadClass;              // edge index -> OSM highway
+    std::vector<int> csvRow;                         // edge index -> data row in edges.csv
+                                                     // (the edge_id used by traffic.csv)
     OsmLoadStats stats;
 };
 

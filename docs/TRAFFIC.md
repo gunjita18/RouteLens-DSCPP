@@ -222,3 +222,47 @@ incident.blocked = userChoseBlock;
 rl::applyScenario(state, sc, scenarioSettings, sc == rl::Scenario::Incident ? &incident : nullptr);
 auto s = rl::summarizeRoute(osm, state, routeEdges, opt.rules, 30.0, &junctions);
 ```
+
+
+## Traffic snapshot (offline demo data)
+
+The server can run from a saved snapshot instead of calling TomTom live, so a demo
+needs no internet and stays inside TomTom's free quota.
+
+**Create it** (once, before the demo; needs internet and a key):
+
+```bash
+export TOMTOM_API_KEY=...                         # never commit or paste the key
+python3 preprocess/fetch_traffic.py --dry-run     # count candidate edges, no network
+python3 preprocess/fetch_traffic.py               # writes data/traffic/traffic.csv
+```
+
+**File format** (`data/traffic/traffic.csv`):
+
+```
+# fetched_at = 2026-11-10 09:30
+edge_id,current_kph,freeflow_kph,confidence
+1452,33,42,0.60
+```
+
+`edge_id` is the 0-based data row of the edge in `data/osm/edges.csv`. After loading,
+`OsmNetwork::csvRow[e]` gives that id for graph edge `e`.
+
+**Rules** (all in `preprocess/fetch_traffic.py`):
+
+1. Only trunk, primary and secondary edges are queried; the point used is the midpoint of the edge's shape.
+2. Segment cache: a midpoint within 50 m of a TomTom segment already fetched reuses its answer.
+3. At most 4 requests per second and 2,000 per run.
+4. 50 m rule: if TomTom's road is farther than 50 m from the midpoint it is a different road; nothing is recorded.
+5. Confidence below 0.5 is ignored (the same rule is applied again by the reader).
+
+**Read it from C** (`src/core/traffic_reader.c`): `ts_load` fills a hash table from edge id to
+record; `traffic_index = 1 - current/freeflow`, clamped to 0..1. Edges not in the file, or a
+missing file, mean traffic index 0 (free-flow speed); the UI must then label the data "estimated".
+Malformed, duplicate and low-confidence rows are skipped and counted (`rows_skipped`).
+
+**Status and limits**
+
+- Unit-tested offline with hand-made fixtures; the fetch script has not yet been run against the live TomTom API in this repository.
+- A dry run on the current network finds 2,445 candidate edges, more than the 2,000-request cap, so the run relies on segment reuse. Check the printed request count after the first real run.
+- TomTom has no data for small roads, and one segment can span many kilometres (see the limits above); the snapshot is one moment in time, shown to users as "Traffic data: <fetched_at>".

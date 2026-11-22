@@ -244,11 +244,12 @@ add_library(routelens_ds STATIC
     src/core/hashtable.c
     src/core/queue.c
     src/core/bfs.c
+    src/core/traffic_reader.c
 )
 target_include_directories(routelens_ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
 
-foreach(ds_test dynarray list hashtable queue bfs)
+foreach(ds_test dynarray list hashtable queue bfs traffic_reader)
     add_executable(test_${ds_test} tests/test_${ds_test}.c)
     target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
     target_compile_options(test_${ds_test} PRIVATE -Wall -Wextra -pedantic)
@@ -256,3 +257,12 @@ foreach(ds_test dynarray list hashtable queue bfs)
     add_test(NAME ${ds_test}_test COMMAND test_${ds_test}
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
+
+# ---------------------------------------------------------------- traffic snapshot script
+# Offline unit tests for preprocess/fetch_traffic.py (no network, no API key).
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME fetch_traffic_test
+             COMMAND ${Python3_EXECUTABLE} preprocess/test_fetch_traffic.py
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()

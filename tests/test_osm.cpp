@@ -43,10 +43,10 @@ static fs::path writeFixture() {
         << "u,v,length_m,highway,maxspeed_kph,oneway,geometry\n"
            "1,2,100.00,residential,,0,78.000000 30.300000;78.000000 30.301000\n"
            "2,1,100.00,residential,,0,78.000000 30.301000;78.000000 30.300000\n"
+           "3,4,50.00,service,,0,78.001000 30.301000;78.001000 30.302000\n"
            "2,3,200.00,primary,50,0,78.000000 30.301000;78.000500 30.301050;78.001000 30.301000\n"
            "3,2,200.00,primary,50,0,78.001000 30.301000;78.000000 30.301000\n"
            "3,1,300.00,secondary,,1,78.001000 30.301000;78.000000 30.300000\n"
-           "3,4,50.00,service,,0,78.001000 30.301000;78.001000 30.302000\n"
            "5,5,80.00,residential,,0,78.003000 30.303000;78.003100 30.303100\n"
            "1,999,10.00,residential,,0,78.000000 30.300000;78.000100 30.300100\n"
            "1,2,not_a_number,residential,,0,78.000000 30.300000;78.000000 30.301000\n";
@@ -94,6 +94,13 @@ static void testLoader() {
         CHECK(e.traffic_index == 0.0);
     }
     CHECK(saw1to2 && saw2to3);
+
+    // csvRow keeps the original data row of every kept edge. Row 2 (3->4) is
+    // dropped by cleaning, so the kept rows are 0, 1, 3, 4, 5 (a gap at 2);
+    // rows 6-8 were rejected while reading.
+    const int expectedRows[] = { 0, 1, 3, 4, 5 };
+    CHECK(net.csvRow.size() == 5);
+    for (size_t i = 0; i < net.csvRow.size() && i < 5; i++) CHECK(net.csvRow[i] == expectedRows[i]);
 
     // Bad header is rejected with a clear error.
     std::ofstream(d / "nodes.csv") << "id,lat,lon\n1,30,78\n";

@@ -153,6 +153,7 @@ OsmNetwork& OsmNetwork::operator=(OsmNetwork&& o) noexcept {
         indexOf = std::move(o.indexOf);
         geometry = std::move(o.geometry);
         roadClass = std::move(o.roadClass);
+        csvRow = std::move(o.csvRow);
         stats = o.stats;
     }
     return *this;
@@ -163,6 +164,7 @@ OsmNetwork& OsmNetwork::operator=(OsmNetwork&& o) noexcept {
 namespace {
 struct RawEdge {
     int u, v;
+    int csvRow = -1;                // 0-based data row in edges.csv (the stable edge id)
     double lengthM;
     std::string highway, maxspeed;
     std::vector<LatLon> geometry;
@@ -224,6 +226,7 @@ bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err,
         auto f = splitCsv(line);
         long long uid, vid;
         RawEdge e;
+        e.csvRow = st.rawEdges - 1;
         if (f.size() != 7 || !parseLongLong(f[0], uid) || !parseLongLong(f[1], vid) ||
             !parseDouble(f[2], e.lengthM) || e.lengthM < 0 || !parseGeometry(f[6], e.geometry)) {
             st.badRows++;
@@ -309,6 +312,7 @@ bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err,
         if (!e.maxspeed.empty()) st.edgesWithMaxspeed++;
         net.geometry.push_back(std::move(e.geometry));
         net.roadClass.push_back(e.highway);
+        net.csvRow.push_back(e.csvRow);
     }
     st.keptEdges = (int)net.geometry.size();
 
