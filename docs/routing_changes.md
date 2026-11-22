@@ -58,6 +58,7 @@ Git history as explored work.
 | `RouteFinder` (abstract) → `DijkstraRouter` → `PenaltyRouter` | **New** | `src/oop/route_finder.{hpp,cpp}`, `tests/test_route_finder.cpp` |
 | Server generates routes through the router classes | **New** | `src/server/osm_route_provider.cpp` |
 | Final ranking by weighted score with the C merge sort | **New** (was `std::stable_sort`) | `src/server/osm_route_provider.cpp` |
+| Scenario reachability ("still reachable after the closure?") with the C BFS and shared C queue | **New**: `bfs_hops` (was `std::queue` in `bfsReachable`) | `src/core/bfs.{c,h}`, `src/algorithms/scenario.cpp`, `tests/test_bfs_hops.c` |
 | NetworkX re-check of the C version | **Done**: 0 mismatches on 3,000 queries | `src/app/eval_main.cpp`, `evaluation/compare_networkx.py`, `docs/evaluation_phase3.md` |
 | A\*, Yen's algorithm, Pareto ranking, C++ Dijkstra / penalty / heap out of the build | **Done** | `CMakeLists.txt`; `tests/test_c_routing_real.cpp` no longer uses the C++ Dijkstra |
 
