@@ -115,7 +115,7 @@ add_executable(routelens_server
     src/server/main.cpp
     src/server/osm_route_provider.cpp
 )
-target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic routelens_core)
+target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic routelens_routing routelens_core)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
 
 
@@ -161,7 +161,7 @@ add_executable(test_route_provider
     tests/test_route_provider.cpp
     src/server/osm_route_provider.cpp
 )
-target_link_libraries(test_route_provider PRIVATE routelens_traffic)
+target_link_libraries(test_route_provider PRIVATE routelens_traffic routelens_routing)
 target_compile_options(test_route_provider PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RouteProviderTests COMMAND test_route_provider)
 # Algorithm evaluation harness (see evaluation/run_evaluation.sh)
