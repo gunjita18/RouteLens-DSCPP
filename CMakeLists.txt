@@ -246,11 +246,12 @@ add_library(routelens_ds STATIC
     src/core/queue.c
     src/core/bfs.c
     src/core/traffic_reader.c
+    src/core/search.c
 )
 target_include_directories(routelens_ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
 
-foreach(ds_test dynarray list hashtable queue bfs traffic_reader)
+foreach(ds_test dynarray list hashtable queue bfs traffic_reader search)
     add_executable(test_${ds_test} tests/test_${ds_test}.c)
     target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
     target_compile_options(test_${ds_test} PRIVATE -Wall -Wextra -pedantic)
@@ -273,3 +274,9 @@ add_executable(test_traffic_provider tests/test_traffic_provider.cpp)
 target_link_libraries(test_traffic_provider PRIVATE routelens_traffic)
 target_compile_options(test_traffic_provider PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME TrafficProviderTests COMMAND test_traffic_provider)
+
+# ---------------------------------------------------------------- lookup experiment: hash table vs binary search
+# Timings are only meaningful with optimisation, so this target always uses -O2.
+add_executable(routelens_lookup_benchmark src/app/lookup_benchmark.c)
+target_link_libraries(routelens_lookup_benchmark PRIVATE routelens_ds)
+target_compile_options(routelens_lookup_benchmark PRIVATE -O2 -Wall -Wextra -pedantic)
