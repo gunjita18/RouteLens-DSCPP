@@ -253,6 +253,19 @@ foreach(ds_test dynarray list hashtable queue bfs traffic_reader search dsu minh
     target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
 endforeach()
 
+# ---------------------------------------------------------------- C++ routing layer over the C core (Gunjita)
+# Route value class (and, below it, the RouteFinder hierarchy) wrapping the C routing core.
+add_library(routelens_routing STATIC
+    src/oop/route.cpp
+)
+target_link_libraries(routelens_routing PUBLIC routelens_ds)
+target_compile_options(routelens_routing PRIVATE -Wall -Wextra -pedantic)
+
+add_executable(test_route tests/test_route.cpp)
+target_link_libraries(test_route PRIVATE routelens_routing)
+target_compile_options(test_route PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME RouteTests COMMAND test_route)
+
 # ---------------------------------------------------------------- traffic snapshot script
 # Offline unit tests for preprocess/fetch_traffic.py (no network, no API key).
 find_package(Python3 COMPONENTS Interpreter)
