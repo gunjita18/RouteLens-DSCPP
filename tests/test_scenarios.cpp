@@ -11,6 +11,8 @@
 
 #include "../src/traffic/eta.hpp"
 #include "../src/oop/scenario.hpp"
+#include "../src/oop/traffic_provider.hpp"
+#include "fake_traffic.hpp"
 
 namespace fs = std::filesystem;
 using namespace rl;
@@ -63,21 +65,15 @@ static void testParsing() {
     CHECK(!isMainRoad("tertiary") && !isMainRoad("residential") && !isMainRoad(""));
 }
 
-static FlowSegment liveSegment() {   // TomTom-style: half speed, live, along A->B->C
-    FlowSegment seg;
-    std::string err;
-    parseFlowSegment("{\"flowSegmentData\":{\"frc\":\"FRC2\",\"currentSpeed\":20,\"freeFlowSpeed\":40,"
-                     "\"confidence\":0.9,\"roadClosure\":false,\"coordinates\":{\"coordinate\":["
-                     "{\"latitude\":30.2995,\"longitude\":78.0},{\"latitude\":30.3025,\"longitude\":78.0}]}}}",
-                     seg, err);
-    return seg;
+// Measured data: half speed (20 of 40 km/h) on the two primary edges A->B and B->C.
+static void halfSpeedOnPrimary(rl_test::FakeTraffic& data, int ab, int bc) {
+    data.set(ab, 20.0, 0.5, 0.9);
+    data.set(bc, 20.0, 0.5, 0.9);
 }
 
 static void testScenarios(OsmNetwork& net) {
     int ab = edgeOf(net, 1, 2), bc = edgeOf(net, 2, 3), cd = edgeOf(net, 3, 4);
     std::vector<int> route = { ab, bc, cd };
-    std::vector<int> all;
-    for (int i = 0; i < net.graph->edge_count; i++) all.push_back(i);
     double ffP = net.graph->edges[ab].duration_s, ffR = net.graph->edges[cd].duration_s;
     TrafficRules rules;
     ScenarioSettings set;
@@ -90,8 +86,10 @@ static void testScenarios(OsmNetwork& net) {
     CHECK(near(s0.etaS, 2 * ffP + ffR + 30.0, 1e-9));   // old behaviour unchanged (signal at D)
     CHECK(coverageLabel(s0) == "no traffic data on this route: ETA is an estimate");
 
-    // Live data on the primary road, then Rain: live data is ignored, every road x 0.88.
-    CHECK(st.applySegment(liveSegment(), rules, all) == 2);
+    // Measured data on the primary road, then Rain: the data is ignored, every road x 0.88.
+    rl_test::FakeTraffic measured;
+    halfSpeedOnPrimary(measured, ab, bc);
+    CHECK(applyProvider(st, measured) == 2);
     CHECK(applyScenario(st, ScenarioKind::Rain, set) == net.graph->edge_count);
     CHECK(st.edge(ab).source == DataSource::Scenario && near(st.edge(ab).ratio, 0.88, 1e-12));
     CHECK(near(st.edge(ab).durationS, ffP / 0.88, 1e-9) && near(st.edge(cd).durationS, ffR / 0.88, 1e-9));
@@ -111,9 +109,9 @@ static void testScenarios(OsmNetwork& net) {
     CHECK(near(h.etaS, 2 * ffP / 0.65 + ffR / 0.85 + 30.0, 1e-9));
     CHECK(h.etaS > r.etaS);
 
-    // Incident (slowed) on top of live data: the live edge keeps its data and is slowed further.
+    // Incident (slowed) on top of measured data: the edge keeps its data and is slowed further.
     st.reset();
-    CHECK(st.applySegment(liveSegment(), rules, all) == 2);
+    CHECK(applyProvider(st, measured) == 2);
     double liveAb = st.edge(ab).durationS;
     Incident slow;
     slow.edges = { ab, -5, 9999 };   // invalid indices are ignored
@@ -121,9 +119,9 @@ static void testScenarios(OsmNetwork& net) {
     CHECK(st.edge(ab).source == DataSource::Scenario && near(st.edge(ab).ratio, 0.5 * 0.30, 1e-12));
     CHECK(near(st.edge(ab).durationS, liveAb / 0.30, 1e-9) && !st.edge(ab).blocked);
     CHECK(near(net.graph->edges[ab].traffic_index, 0.85, 1e-12));
-    CHECK(st.edge(bc).source == DataSource::Live);   // untouched
+    CHECK(st.edge(bc).source == DataSource::Historical);   // untouched: still the snapshot's data
     RouteSummary i = summarizeRoute(net, st, route, rules, 30.0);
-    CHECK(i.scenarioShare > 0 && i.liveShare > 0 && !i.anyBlocked);
+    CHECK(i.scenarioShare > 0 && i.historicalShare > 0 && i.liveShare == 0.0 && !i.anyBlocked);
     CHECK(coverageLabel(i) == "scenario estimate on 35% of the route, live/typical data on 35%");
 
     // Incident (blocked): huge routing cost, flagged in the summary.

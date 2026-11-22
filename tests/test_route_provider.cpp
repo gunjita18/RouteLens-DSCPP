@@ -5,6 +5,7 @@
 
 #include "../src/server/osm_route_provider.hpp"
 #include "../src/oop/scenario.hpp"
+#include "fake_traffic.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -59,27 +60,7 @@ bool passesThrough(const rl::RouteInfo& route, const rl::LatLon& p) {
     return false;
 }
 
-// A traffic source for tests: chosen edges have a measured speed and congestion.
-// Deriving from the abstract TrafficProvider is the point: the route provider
-// does not know, or care, that these numbers are made up.
-class FakeTraffic : public rl::TrafficProvider {
-public:
-    void set(int edge, double kph, double index) { data_[edge] = {kph, index}; }
-    double trafficIndex(int edge) const override {
-        auto it = data_.find(edge);
-        return it == data_.end() ? 0.0 : it->second.second;
-    }
-    bool hasData(int edge) const override { return data_.count(edge) > 0; }
-    double currentKph(int edge) const override {
-        auto it = data_.find(edge);
-        return it == data_.end() ? 0.0 : it->second.first;
-    }
-    int edgesWithData() const override { return static_cast<int>(data_.size()); }
-    std::string description() const override { return "fake test data"; }
-
-private:
-    std::map<int, std::pair<double, double>> data_;   // edge -> (km/h, congestion index)
-};
+using rl_test::FakeTraffic;   // measured speed and congestion on chosen edges (tests/fake_traffic.hpp)
 
 rl::RouteRequest request() {
     rl::RouteRequest r;

@@ -5,8 +5,10 @@
 #include <fstream>
 #include <iostream>
 
+#include "../src/oop/traffic_provider.hpp"
 #include "../src/traffic/eta.hpp"
 #include "../src/traffic/junctions.hpp"
+#include "fake_traffic.hpp"
 
 namespace fs = std::filesystem;
 using namespace rl;
@@ -115,20 +117,17 @@ static void testRouteCountAndEta(OsmNetwork& net, const fs::path& csv) {
     CHECK(near(s1.freeFlowS, ff + 60.0, 1e-9) && near(s1.etaS, ff + 60.0, 1e-9));
     CHECK(s1.signals == 1);                                  // still reported, for information
 
-    // Live TomTom data on A->B: Bee Chowk's wait is inside TomTom's speed, so only Dee Chowk adds 30 s.
-    FlowSegment seg;
-    CHECK(parseFlowSegment("{\"flowSegmentData\":{\"frc\":\"FRC2\",\"currentSpeed\":20,\"freeFlowSpeed\":40,"
-                           "\"confidence\":0.9,\"roadClosure\":false,\"coordinates\":{\"coordinate\":["
-                           "{\"latitude\":30.2995,\"longitude\":78.0},{\"latitude\":30.3009,\"longitude\":78.0}]}}}",
-                           seg, err));
-    CHECK(st.applySegment(seg, rules, { ab }) == 1);
+    // Measured data on A->B: Bee Chowk's wait is inside the measured speed, so only Dee Chowk adds 30 s.
+    rl_test::FakeTraffic measuredAb;
+    measuredAb.set(ab, 20.0, 0.5, 0.9);
+    CHECK(applyProvider(st, measuredAb) == 1);
     RouteSummary s2 = summarizeRoute(net, st, route, rules, 30.0, &idx);
     double live = 111.2 / (20 / 3.6);
     double rest = 0;
     for (int e : { bb2, b2c, cd }) rest += net.graph->edges[e].duration_s;
     CHECK(s2.junctions == 2);
     CHECK(near(s2.etaS, live + rest + 30.0, 1e-9));
-    CHECK(near(s2.freeFlowS, ff + 60.0, 1e-9));             // free-flow ETA unchanged by live data
+    CHECK(near(s2.freeFlowS, ff + 60.0, 1e-9));             // free-flow ETA unchanged by measured data
 }
 
 int main() {

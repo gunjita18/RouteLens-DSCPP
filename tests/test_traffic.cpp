@@ -1,47 +1,24 @@
-// test_traffic.cpp — offline tests for the traffic module: parsing, rules,
-// matching, TrafficState and the ETA summary. No network is used.
+// test_traffic.cpp — offline tests for the traffic module: traffic levels,
+// display formatting, TrafficState and the ETA summary, with measured traffic
+// supplied through a fake TrafficProvider. No network is used.
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <sstream>
 
+#include "../src/oop/traffic_provider.hpp"
 #include "../src/traffic/eta.hpp"
+#include "fake_traffic.hpp"
 
 namespace fs = std::filesystem;
 using namespace rl;
+using rl_test::FakeTraffic;
 
 static int failures = 0, checks = 0;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << ": " #c "\n"; } } while (0)
 static bool near(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
 
-// A TomTom-style response for a northbound road along lon 78.0.
-static std::string flowJson(double cur, double freeFlow, double conf, bool closure = false,
-                            double lat0 = 30.2995, double lat1 = 30.3025, double lon = 78.0) {
-    std::ostringstream o;
-    o.precision(10);
-    o << "{\"flowSegmentData\":{\"frc\":\"FRC2\",\"currentSpeed\":" << cur << ",\"freeFlowSpeed\":" << freeFlow
-      << ",\"currentTravelTime\":60,\"freeFlowTravelTime\":30,\"confidence\":" << conf
-      << ",\"roadClosure\":" << (closure ? "true" : "false") << ",\"coordinates\":{\"coordinate\":["
-      << "{\"latitude\":" << lat0 << ",\"longitude\":" << lon << "},"
-      << "{\"latitude\":" << (lat0 + lat1) / 2 << ",\"longitude\":" << lon << "},"
-      << "{\"latitude\":" << lat1 << ",\"longitude\":" << lon << "}]},\"@version\":\"x\"}}";
-    return o.str();
-}
-
 // ---------------------------------------------------------------- pure rules
-
-static void testParse() {
-    FlowSegment s;
-    std::string err;
-    CHECK(parseFlowSegment(flowJson(33, 42, 0.595945), s, err));
-    CHECK(s.frc == "FRC2" && s.currentKph == 33 && s.freeFlowKph == 42 && near(s.confidence, 0.595945, 1e-9));
-    CHECK(s.shape.size() == 3 && near(s.shape[0].lat, 30.2995, 1e-9) && !s.roadClosure);
-    CHECK(parseFlowSegment(flowJson(0, 42, 1, true), s, err) && s.roadClosure);
-    CHECK(!parseFlowSegment("not json", s, err));
-    CHECK(!parseFlowSegment("{\"flowSegmentData\":{\"currentSpeed\":1}}", s, err));
-    CHECK(!parseFlowSegment("{\"error\":\"x\"}", s, err));
-}
 
 static void testRules() {
     TrafficRules r;
@@ -52,12 +29,10 @@ static void testRules() {
     CHECK(levelForRatio(0.5, r) == TrafficLevel::Medium);
     CHECK(levelForRatio(0.49, r) == TrafficLevel::High);
     CHECK(levelForRatio(NAN, r) == TrafficLevel::Unknown);
-    CHECK(sourceForConfidence(1.0, r) == DataSource::Live);
-    CHECK(sourceForConfidence(0.61, r) == DataSource::Live);
-    CHECK(sourceForConfidence(0.6, r) == DataSource::Historical);
-    CHECK(sourceForConfidence(0.565093, r) == DataSource::Historical);
-    CHECK(sourceForConfidence(0.5, r) == DataSource::Historical);
-    CHECK(sourceForConfidence(0.49, r) == DataSource::FreeFlow);
+    CHECK(levelForRatio(-0.1, r) == TrafficLevel::Unknown);
+    CHECK(std::string(levelName(TrafficLevel::High)) == "High");
+    CHECK(std::string(sourceName(DataSource::Historical)) == "saved snapshot");
+    CHECK(std::string(sourceName(DataSource::FreeFlow)) == "estimated (free-flow)");
 
     CHECK(formatDuration(0) == "< 1 min");
     CHECK(formatDuration(29) == "< 1 min");
@@ -69,10 +44,6 @@ static void testRules() {
     CHECK(formatDuration(-1) == "unknown");
     CHECK(formatDistance(850) == "850 m");
     CHECK(formatDistance(9400) == "9.4 km");
-
-    CHECK(near(bearingDeg({ 30.30, 78.0 }, { 30.31, 78.0 }), 0.0, 0.01));
-    CHECK(near(bearingDeg({ 30.30, 78.0 }, { 30.30, 78.01 }), 90.0, 0.1));
-    CHECK(near(angleDiffDeg(350, 10), 20, 1e-9) && near(angleDiffDeg(0, 180), 180, 1e-9));
 }
 
 // ---------------------------------------------------------------- small network
@@ -102,60 +73,55 @@ static int edgeOf(const OsmNetwork& net, long long a, long long b) {
     return -1;
 }
 
-static void testMatchingAndState() {
+static void testTrafficState() {
     OsmNetwork net;
     std::string err;
     CHECK(loadOsmNetwork(writeNetwork().string(), net, err));
     if (!net.graph) return;
-    int ab = edgeOf(net, 1, 2), ba = edgeOf(net, 2, 1), bc = edgeOf(net, 2, 3), cd = edgeOf(net, 3, 4);
-    CHECK(ab >= 0 && ba >= 0 && bc >= 0 && cd >= 0);
+    int ab = edgeOf(net, 1, 2), ba = edgeOf(net, 2, 1), bc = edgeOf(net, 2, 3);
+    CHECK(ab >= 0 && ba >= 0 && bc >= 0);
 
-    FlowSegment seg;
-    CHECK(parseFlowSegment(flowJson(20, 40, 0.9), seg, err));
-    TrafficRules r;
-    bool wrongWay = false;
-    CHECK(edgeMatchesSegment(net.geometry[ab], seg, r, &wrongWay) && !wrongWay);
-    CHECK(!edgeMatchesSegment(net.geometry[ba], seg, r, &wrongWay) && wrongWay);    // opposite direction
-    CHECK(!edgeMatchesSegment(net.geometry[cd], seg, r, &wrongWay) && !wrongWay);   // side street, too far
-
-    std::vector<int> all;
-    for (int i = 0; i < net.graph->edge_count; i++) all.push_back(i);
     TrafficState st(net);
-    CHECK(st.applySegment(seg, r, all) == 2);                   // A->B and B->C only
-    CHECK(st.directionRejections() == 2);                       // B->A and C->B
-    CHECK(st.edge(ab).source == DataSource::Live && near(st.edge(ab).ratio, 0.5, 1e-9));
-    CHECK(near(st.edge(ab).durationS, 111.2 / (20 / 3.6), 1e-9));
+    CHECK(st.edgeCount() == net.graph->edge_count);
+    CHECK(st.edge(ab).source == DataSource::FreeFlow && st.edge(ab).ratio == 1.0);
+    CHECK(near(st.edge(ab).durationS, net.graph->edges[ab].duration_s, 1e-12));
+
+    // Measured half speed on A->B and B->C only.
+    FakeTraffic data;
+    data.set(ab, 20.0, 0.5, 0.9);
+    data.set(bc, 20.0, 0.5, 0.9);
+    CHECK(applyProvider(st, data) == 2);
+    CHECK(st.edge(ab).source == DataSource::Historical && near(st.edge(ab).ratio, 0.5, 1e-9));
+    CHECK(near(st.edge(ab).confidence, 0.9, 1e-12));
+    CHECK(near(st.edge(ab).durationS, 111.2 / (20 / 3.6), 1e-9));        // length / measured speed
     CHECK(near(net.graph->edges[ab].traffic_index, 0.5, 1e-9));
     CHECK(st.edge(ba).source == DataSource::FreeFlow && net.graph->edges[ba].traffic_index == 0.0);
-    CHECK(near(st.edge(ba).durationS, net.graph->edges[ba].duration_s, 1e-12));
+    CHECK(near(st.edge(ba).durationS, net.graph->edges[ba].duration_s, 1e-12));   // no data: unchanged
 
-    // Costs use the live time: 20.016 s = 0.3336 min on A->B.
+    // Costs use the measured time: 20.016 s = 0.3336 min on A->B.
     Weights w{ 0.0, 1.0, 0.0, 0.0 };
     std::vector<double> c;
     st.computeCosts(w, c);
     CHECK(near(c[ab], (111.2 / (20 / 3.6)) / 60.0, 1e-9));
+    Weights cong{ 0.0, 0.0, 1.0, 0.0 };                                   // congestion priority only
+    st.computeCosts(cong, c);
+    CHECK(c[ab] > 0.0 && c[ba] == 0.0);
 
-    // Low confidence is ignored; better data is not overwritten by worse data.
-    FlowSegment weak;
-    CHECK(parseFlowSegment(flowJson(5, 40, 0.4), weak, err));
-    CHECK(st.applySegment(weak, r, all) == 0);
-    FlowSegment hist;
-    CHECK(parseFlowSegment(flowJson(30, 40, 0.55), hist, err));
-    CHECK(st.applySegment(hist, r, all) == 0);                  // 0.9 already there
+    // reset() returns every edge to free flow.
     st.reset();
-    CHECK(st.applySegment(hist, r, all) == 2 && st.edge(bc).source == DataSource::Historical);
+    CHECK(st.edge(ab).source == DataSource::FreeFlow && net.graph->edges[ab].traffic_index == 0.0);
 
-    // Closure: travel time stays free-flow, congestion is maximal.
+    // A measured speed of 0 marks the edge closed: free-flow time kept, congestion maximal.
+    FakeTraffic stopped;
+    stopped.set(ab, 0.0, 1.0, 1.0);
+    CHECK(applyProvider(st, stopped) == 1);
+    CHECK(st.edge(ab).closed && near(st.edge(ab).durationS, net.graph->edges[ab].duration_s, 1e-12));
+    CHECK(net.graph->edges[ab].traffic_index == 1.0);
+
+    // A provider with no data changes nothing.
     st.reset();
-    FlowSegment closed;
-    CHECK(parseFlowSegment(flowJson(0, 40, 1.0, true), closed, err));
-    CHECK(st.applySegment(closed, r, all) == 2 && st.edge(ab).closed && net.graph->edges[ab].traffic_index == 1.0);
-
-    // Sampling skips the residential edge; one sample 200 m along the primary road.
-    std::vector<LatLon> smp = sampleRoute(net, { ab, bc, cd }, 400.0);
-    CHECK(smp.size() == 1 && near(smp[0].lon, 78.0, 1e-9) && smp[0].lat > 30.301 && smp[0].lat < 30.302);
-    CHECK(sampleRoute(net, { cd }, 400.0).empty());
-    CHECK(tomtomCoversRoadClass("primary_link") && !tomtomCoversRoadClass("residential"));
+    FreeFlowProvider none;
+    CHECK(applyProvider(st, none) == 0 && !st.edge(ab).closed);
 }
 
 // ---------------------------------------------------------------- route summary
@@ -178,24 +144,24 @@ static void testRouteSummary() {
     CHECK(s0.level == TrafficLevel::Unknown);
     CHECK(coverageLabel(s0) == "no traffic data on this route: ETA is an estimate");
 
-    // With TomTom data on the primary road (confidence 0.9, half speed): the
-    // segment matches the two primary edges, not the residential one.
-    FlowSegment seg;
-    CHECK(parseFlowSegment(flowJson(20, 40, 0.9), seg, err));
-    CHECK(st.applySegment(seg, r, route) == 2);
+    // Measured data on the two primary edges (half speed); the residential edge has none.
+    FakeTraffic data;
+    data.set(ab, 20.0, 0.5, 0.9);
+    data.set(bc, 20.0, 0.5, 0.9);
+    CHECK(applyProvider(st, data) == 2);
     RouteSummary s = summarizeRoute(net, st, route, r, 30.0);
-    double live = 111.2 / (20 / 3.6);
-    // Signal B is on a live edge (wait already in TomTom's speed); D is on a free-flow edge.
-    CHECK(near(s.etaS, 2 * live + ffRes + 30, 1e-9));
-    CHECK(near(s.liveShare, 222.4 / 318.4, 1e-9) && near(s.estimatedShare, 96.0 / 318.4, 1e-9));
+    double measured = 111.2 / (20 / 3.6);
+    // Signal B is on a measured edge (the wait is already in the measured speed); D is on a free-flow edge.
+    CHECK(near(s.etaS, 2 * measured + ffRes + 30, 1e-9));
+    CHECK(near(s.historicalShare, 222.4 / 318.4, 1e-9) && near(s.estimatedShare, 96.0 / 318.4, 1e-9));
+    CHECK(s.liveShare == 0.0);                                            // a snapshot is never live
     CHECK(near(s.meanRatio, 0.5, 1e-9) && s.level == TrafficLevel::Medium && !s.anyClosure);
-    CHECK(coverageLabel(s) == "live on 70% of the route, typical on 0%, estimated on 30%");
+    CHECK(coverageLabel(s) == "live on 0% of the route, typical on 70%, estimated on 30%");
 }
 
 int main() {
-    testParse();
     testRules();
-    testMatchingAndState();
+    testTrafficState();
     testRouteSummary();
     std::cout << "test_traffic: " << checks << " checks, " << failures << " failures\n";
     return failures ? 1 : 0;

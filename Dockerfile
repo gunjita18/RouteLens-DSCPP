@@ -2,10 +2,8 @@
 #   git clone --recurse-submodules <repo>   (or: git submodule update --init)
 
 FROM ubuntu:24.04 AS build
-# cJSON is needed by the traffic module, which routelens_server links (it parses
-# TomTom segment JSON and reads the major junctions).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        cmake g++ make libasio-dev libcjson-dev \
+        cmake g++ make libasio-dev \
         libssl-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -17,12 +15,9 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --target routelens_server -j2
 
 FROM ubuntu:24.04
-# The server never calls TomTom (it reads a saved snapshot), so it needs no
-# libcurl and no CA certificates. Only cJSON is needed at run time.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libcjson1 \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --no-create-home routelens
+# The server never calls TomTom (it reads a saved snapshot), so it needs no HTTP
+# or JSON library and no CA certificates: nothing to install at run time.
+RUN useradd --system --no-create-home routelens
 WORKDIR /app
 COPY --from=build /src/build/routelens_server /app/routelens_server
 COPY web /app/web
