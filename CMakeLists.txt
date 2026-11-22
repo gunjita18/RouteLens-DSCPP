@@ -217,7 +217,7 @@ target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
 
 # routelens_c_test (top of this file) runs each from the repo root, so
 # test_hashtable can find data/osm/nodes.csv, and adds a Valgrind run in CI.
-foreach(ds_test dynarray list hashtable queue bfs traffic_reader search dsu minheap stack sort c_dijkstra c_penalty)
+foreach(ds_test dynarray list hashtable queue bfs bfs_hops traffic_reader search dsu minheap stack sort c_dijkstra c_penalty)
     routelens_c_test(test_${ds_test} tests/test_${ds_test}.c)
     target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
 endforeach()

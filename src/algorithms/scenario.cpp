@@ -3,8 +3,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <queue>
 #include <vector>
+
+#include "../core/bfs.h"
 
 namespace rl {
 
@@ -143,40 +144,22 @@ ReachResult bfsReachable(
         return result;
     }
 
-    std::vector<int> hops(graph->node_count, -1);
-    std::queue<int> frontier;
+    // The search itself is the hand-written C BFS with the shared circular queue
+    // (src/core/bfs.c, bfs_hops). std::vector<bool> is packed bits, so the
+    // closures are copied into one char per edge for C.
+    std::vector<char> blocked;
+    if (blockedEdges) blocked.assign(blockedEdges->begin(), blockedEdges->end());
 
-    hops[source] = 0;
-    frontier.push(source);
-    result.visited = 1;
+    int visited = 0;
+    const int hops = bfs_hops(graph, source, destination,
+                              blocked.empty() ? nullptr : blocked.data(), &visited);
+    if (hops == BFS_ERROR) return result;   // out of memory: reported as unreachable
 
-    while (!frontier.empty()) {
-        const int u = frontier.front();
-        frontier.pop();
-
-        if (u == destination) {
-            result.reachable = true;
-            result.hops = hops[u];
-            return result;
-        }
-
-        for (int e = graph->first_out[u]; e != -1; e = graph->next_out[e]) {
-            if (blockedEdges && (*blockedEdges)[e]) {
-                continue;
-            }
-
-            const int v = graph->edges[e].to;
-
-            if (v < 0 || v >= graph->node_count || hops[v] != -1) {
-                continue;
-            }
-
-            hops[v] = hops[u] + 1;
-            ++result.visited;
-            frontier.push(v);
-        }
+    result.visited = visited;
+    if (hops >= 0) {
+        result.reachable = true;
+        result.hops = hops;
     }
-
     return result;
 }
 
