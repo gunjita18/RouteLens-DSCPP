@@ -9,8 +9,9 @@ Outputs (in data/osm/ by default):
   meta.txt   download date, versions, bounding box and validation numbers
 
 The graph is deliberately NOT reduced to its largest component here: that is
-done in C++ with Tarjan's SCC algorithm. meta.txt records the expected SCC
-numbers (computed with NetworkX) so the C++ result can be checked against them.
+done by the loader with forward and reverse BFS (src/core/bfs.c). meta.txt records
+the expected strongly connected component sizes (computed with NetworkX) so the
+loader's result can be checked against them.
 
 Usage (from the project root):
   python3 preprocess/export_osm.py

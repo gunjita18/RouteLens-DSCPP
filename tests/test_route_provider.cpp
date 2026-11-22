@@ -4,7 +4,7 @@
 // traffic scenarios (rain, rush hour).
 
 #include "../src/server/osm_route_provider.hpp"
-#include "../src/traffic/scenario.hpp"
+#include "../src/oop/scenario.hpp"
 
 #include <cassert>
 #include <cmath>

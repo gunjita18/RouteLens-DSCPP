@@ -11,23 +11,52 @@ It does **not** contain any routing algorithm.
 | `preprocess/export_osm.py` | Downloads Dehradun's drivable roads with OSMnx and writes the CSVs |
 | `data/osm/nodes.csv`, `edges.csv`, `meta.txt` | The exported network (CSVs are not in Git; see below) |
 | `src/core/graph.h`, `graph.c` | Directed graph (forward-star adjacency list), the shared interface |
-| `src/data/osm_loader.hpp`, `.cpp` | Loads the CSVs into a `Graph`: hash-map ID mapping, iterative Tarjan SCC, free-flow times |
-| `src/app/osm_info_main.cpp` | Prints load statistics and checks the SCC result against NetworkX |
-| `tests/test_osm.cpp` | Unit tests (Tarjan, speed rules, loader) |
+| `src/core/hashtable.*`, `list.*`, `dynarray.*`, `queue.*` | Hand-written C data structures used by the loader (see below) |
+| `src/core/bfs.h`, `bfs.c` | Forward and reverse breadth-first search; graph cleaning |
+| `src/core/dsu.h`, `dsu.c` | Union-find; counts the weakly connected parts of the raw network (check only) |
+| `src/data/osm_loader.hpp`, `.cpp` | Loads the CSVs into a `Graph`: C hash table for ID mapping, BFS cleaning, free-flow times |
+| `src/app/osm_info_main.cpp` | Prints load statistics and checks the cleaning result against NetworkX |
+| `tests/test_osm.cpp`, `test_bfs.c`, `test_hashtable.c`, ... | Unit tests (one file per structure, plus the loader) |
 
-Build and check (run from this folder):
+Build and check (run from the repository root):
 
 ```bash
-make test                     # 48 checks, 0 failures
-make && ./bin/routelens_osm_info
+cmake -S . -B build && cmake --build build -j
+(cd build && ctest --output-on-failure)
+./build/routelens_osm_info          # prints statistics and "CHECK PASS" against meta.txt
 ```
+
+## Graph cleaning (forward + reverse BFS)
+
+A route must exist between any two nodes, so nodes that cannot be reached, or
+from which the main network cannot be reached (dead-end one-way stubs), are
+removed. The loader does this with two breadth-first searches:
+
+1. Pick a centre node: the node nearest Clock Tower (`OsmLoadOptions::centre`).
+2. BFS along the roads from the centre: mark every node it can reach.
+3. BFS along the reversed roads: mark every node that can reach it.
+4. Keep the nodes marked by both. They are exactly the centre's strongly
+   connected component; every other node and its edges are dropped.
+
+Each BFS is O(V + E) and uses the circular queue in `queue.c`. If the centre lies on
+an isolated stub, the component found is small. The loader then tries the next
+nearest nodes (at most 20) and keeps the largest result. It stops as soon as one
+component holds more than half of all nodes, because two disjoint components cannot
+both be that large.
+
+The OSM ID to node index map is the C hash table in `hashtable.c` (multiplicative
+hashing, separate chaining, rehash when the load factor exceeds 0.75), wrapped in
+`rl::IdIndex`, which frees it automatically.
 
 ## Current network (export of 2026-10-18)
 
 - Bounding box: west 77.90, south 30.20, east 78.15, north 30.45
 - Exported: 32,110 nodes, 73,165 directed edges
-- After loading (largest strongly connected component): **31,802 nodes, 72,626 edges**
-- Verified: the C++ Tarjan result matches NetworkX exactly (89 SCCs, largest 31,802)
+- After loading (strongly connected core): **31,802 nodes, 72,626 edges**
+- Verified: the BFS cleaning keeps exactly the node count of NetworkX's largest strongly
+  connected component (31,802, recorded in `meta.txt`); `test_osm` and `routelens_osm_info` check it
+- Independent check: union-find over the raw edges (direction ignored) finds 72 weakly connected
+  parts, the same as NetworkX. It does not take part in cleaning; it only confirms the input data.
 - Known data gaps: only 6 traffic signals are mapped in OSM; 98% of edges have no
   `maxspeed` tag, so free-flow times use provisional defaults (below)
 
@@ -54,7 +83,7 @@ over time, so a new export can differ slightly; compare against `meta.txt`.
 
 - `net.graph`: a `Graph*` with nodes `0..node_count-1`. Every node can reach every other node.
 - `net.osmId[i]`, `net.pos[i]`, `net.isSignal[i]`: per node
-- `net.indexOf`: OSM ID to node index (hash map)
+- `net.indexOf.find(osmId)`: OSM ID to node index, or -1 if the ID is not in the kept network
 - `net.geometry[e]`, `net.roadClass[e]`: per edge, same index as `graph->edges[e]`
 
 Each `Edge` in the graph has:

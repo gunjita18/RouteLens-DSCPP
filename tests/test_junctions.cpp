@@ -65,9 +65,9 @@ static void testLoadAndSnap(const OsmNetwork& net, const fs::path& csv) {
     CHECK(idx.junctions[0].nodes.size() == 2);             // B and B2
     CHECK(idx.junctions[1].nodes.size() == 1);             // D
     CHECK(idx.junctions[2].nodes.empty());
-    CHECK(idx.junctionOf(net.indexOf.at(2)) == 0 && idx.junctionOf(net.indexOf.at(3)) == 0);
-    CHECK(idx.junctionOf(net.indexOf.at(5)) == 1);
-    CHECK(idx.junctionOf(net.indexOf.at(1)) == -1 && idx.junctionOf(net.indexOf.at(4)) == -1);
+    CHECK(idx.junctionOf(net.indexOf.find(2)) == 0 && idx.junctionOf(net.indexOf.find(3)) == 0);
+    CHECK(idx.junctionOf(net.indexOf.find(5)) == 1);
+    CHECK(idx.junctionOf(net.indexOf.find(1)) == -1 && idx.junctionOf(net.indexOf.find(4)) == -1);
     CHECK(idx.junctionOf(-1) == -1 && idx.junctionOf(999) == -1);
 
     // A 5 m radius still catches B and B2 (2-4 m away) and D (exact).

@@ -19,3 +19,7 @@ data/cache/
 build-eval/
 evaluation/results/
 data/osm/*.html
+
+# Python bytecode
+__pycache__/
+*.pyc

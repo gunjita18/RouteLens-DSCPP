@@ -1,5 +1,5 @@
 // osm_info_main.cpp — loads the OSMnx export, prints load statistics and
-// checks the C++ Tarjan result against NetworkX (meta.txt).
+// checks the BFS graph cleaning against NetworkX (meta.txt).
 //
 // usage: routelens_osm_info [DIR]      (default DIR = data/osm)
 #include <chrono>
@@ -46,8 +46,8 @@ int main(int argc, char** argv) {
     std::cout << "Loaded " << dir << " in " << (long)loadMs << " ms\n"
               << "  raw:   " << s.rawNodes << " nodes, " << s.rawEdges << " edge rows\n"
               << "  skipped: " << s.selfLoops << " self-loops, " << s.badRows << " bad rows\n"
-              << "  SCCs:  " << s.sccCount << " (Tarjan, iterative)\n"
-              << "  kept:  " << s.keptNodes << " nodes, " << s.keptEdges << " edges (largest SCC); "
+              << "  kept:  " << s.keptNodes << " nodes, " << s.keptEdges
+              << " edges (forward + reverse BFS from raw node " << s.bfsCentre << "); "
               << s.droppedEdges << " edges dropped\n"
               << "  signal nodes kept: " << s.signalNodes << "\n"
               << "  kept edges with a maxspeed tag: " << s.edgesWithMaxspeed << " ("
@@ -62,15 +62,22 @@ int main(int argc, char** argv) {
     // ---- correctness check against NetworkX
     int ok = 1;
     long expectNodes = readMetaInt(dir + "/meta.txt", "largest_scc_nodes");
-    long expectSccs = readMetaInt(dir + "/meta.txt", "strongly_connected_components");
     if (expectNodes < 0) {
         std::cout << "CHECK skipped: no largest_scc_nodes in meta.txt\n";
     } else {
-        bool pass = expectNodes == s.keptNodes && expectSccs == s.sccCount;
-        ok = pass;
-        std::cout << (pass ? "CHECK PASS" : "CHECK FAIL") << ": largest SCC " << s.keptNodes
-                  << " (NetworkX " << expectNodes << "), SCC count " << s.sccCount
-                  << " (NetworkX " << expectSccs << ")\n";
+        bool pass = expectNodes == s.keptNodes;
+        ok = ok && pass;
+        std::cout << (pass ? "CHECK PASS" : "CHECK FAIL") << ": kept " << s.keptNodes
+                  << " nodes (NetworkX largest SCC " << expectNodes << ")\n";
+    }
+    long expectWeak = readMetaInt(dir + "/meta.txt", "weakly_connected_components");
+    if (expectWeak < 0) {
+        std::cout << "CHECK skipped: no weakly_connected_components in meta.txt\n";
+    } else {
+        bool pass = expectWeak == s.weakComponents;
+        ok = ok && pass;
+        std::cout << (pass ? "CHECK PASS" : "CHECK FAIL") << ": " << s.weakComponents
+                  << " weakly connected parts, union-find (NetworkX " << expectWeak << ")\n";
     }
 
     return ok ? 0 : 1;

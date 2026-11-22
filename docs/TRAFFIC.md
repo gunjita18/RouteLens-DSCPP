@@ -5,12 +5,25 @@ traffic module does, its inputs and outputs, every threshold it uses and why,
 and how to call it from the server. All numbers below are the defaults in the
 code (`src/traffic/`).
 
+> **Status: traffic source is moving from live calls to a saved snapshot.**
+> The Phase III design reads TomTom data from a file saved before the demo
+> (`preprocess/fetch_traffic.py` -> `data/traffic/traffic.csv`), so the demo works
+> offline. Sections 3-6 and 10 below describe the live TomTom client, which the
+> server still uses until it is switched to `makeTrafficProvider()`; after that
+> switch the client, its cache and rate limiter are retired from the build (they stay
+> in Git history). The new design is described in "Traffic snapshot (offline demo
+> data)" and "C++ class hierarchies" at the end of this document. Sections 7-9, 11-13
+> (per-edge traffic, route summary, junctions, scenarios) apply to both.
+
 ## 1. Files
 
 | File | Purpose |
 |---|---|
 | `src/traffic/traffic.hpp/.cpp` | Rules, TomTom response parsing, matching TomTom segments to graph edges, per-edge traffic state, route sampling |
-| `src/traffic/tomtom_client.hpp/.cpp` | TomTom Traffic Flow client with free-plan guardrails; `updateRouteTraffic()` |
+| `src/traffic/tomtom_client.hpp/.cpp` | TomTom Traffic Flow client with free-plan guardrails; `updateRouteTraffic()` (live path, to be retired) |
+| `src/oop/traffic_provider.*`, `scenario.*`, `load_error.hpp` | Class hierarchies: `TrafficProvider` (free-flow, snapshot) and `Scenario` (normal, rain, rush hour, incident) |
+| `src/core/traffic_reader.*` | C reader that loads the saved snapshot into a hash table |
+| `preprocess/fetch_traffic.py` | Saves the TomTom snapshot (run once, before the demo) |
 | `src/traffic/eta.hpp/.cpp` | Route summary: ETA with and without traffic, traffic level, data coverage, junction count; display formatting |
 | `src/traffic/junctions.hpp/.cpp` | Major-junction list: loading, snapping to the graph, counting per route |
 | `src/data/http_client.*`, `json_util.hpp`, `geo.cpp` | libcurl HTTP client, cJSON helpers, distance/geometry helpers |
@@ -187,7 +200,10 @@ once the server adds a mutex.
 - Free-flow speeds per road class (`osm_loader.cpp`) and the 30 s junction wait are provisional and will be calibrated in the ETA accuracy study.
 - A route passing within 50 m of a junction without going through it can be counted as passing it.
 - 9 junctions reported in Aug 2025 have no verified coordinates yet.
-## 13. Scenarios (`scenario.hpp`)
+- Dehradun has only 6 traffic signals mapped in OSM. The major junctions (documented in `data/junctions/major_junctions.csv`) are therefore **assumed** to be signalised for the waiting-time estimate; this is a modelling assumption, not surveyed signal data, and the 30 s wait per junction is provisional.
+- The snapshot is one moment in time. The first real snapshot (Sunday 10:08) was 96% low traffic, so it says little about rush hour; a weekday snapshot is needed to show congestion.
+
+## 13. Scenarios (`src/oop/scenario.hpp`)
 
 | Scenario | Starts from | Change | TomTom requests |
 |---|---|---|---|
@@ -222,3 +238,89 @@ incident.blocked = userChoseBlock;
 rl::applyScenario(state, sc, scenarioSettings, sc == rl::Scenario::Incident ? &incident : nullptr);
 auto s = rl::summarizeRoute(osm, state, routeEdges, opt.rules, 30.0, &junctions);
 ```
+
+
+## Traffic snapshot (offline demo data)
+
+The server can run from a saved snapshot instead of calling TomTom live, so a demo
+needs no internet and stays inside TomTom's free quota.
+
+**Create it** (once, before the demo; needs internet and a key):
+
+```bash
+export TOMTOM_API_KEY=...                         # never commit or paste the key
+python3 preprocess/fetch_traffic.py --dry-run     # count candidate edges, no network
+python3 preprocess/fetch_traffic.py               # writes data/traffic/traffic.csv
+```
+
+**File format** (`data/traffic/traffic.csv`):
+
+```
+# fetched_at = 2026-11-10 09:30
+edge_id,current_kph,freeflow_kph,confidence
+1452,33,42,0.60
+```
+
+`edge_id` is the 0-based data row of the edge in `data/osm/edges.csv`. After loading,
+`OsmNetwork::csvRow[e]` gives that id for graph edge `e`.
+
+**Rules** (all in `preprocess/fetch_traffic.py`):
+
+1. Only trunk, primary and secondary edges are queried; the point used is the midpoint of the edge's shape.
+2. Segment cache: a midpoint within 50 m of a TomTom segment already fetched reuses its answer.
+3. At most 4 requests per second and 2,000 per run.
+4. 50 m rule: if TomTom's road is farther than 50 m from the midpoint it is a different road; nothing is recorded.
+5. Confidence below 0.5 is ignored (the same rule is applied again by the reader).
+
+**Read it from C** (`src/core/traffic_reader.c`): `ts_load` fills a hash table from edge id to
+record; `traffic_index = 1 - current/freeflow`, clamped to 0..1. Edges not in the file, or a
+missing file, mean traffic index 0 (free-flow speed); the UI must then label the data "estimated".
+Malformed, duplicate and low-confidence rows are skipped and counted (`rows_skipped`).
+
+**Status and limits**
+
+- Unit-tested offline with hand-made fixtures; the fetch script has not yet been run against the live TomTom API in this repository.
+- A dry run on the current network finds 2,445 candidate edges, more than the 2,000-request cap, so the run relies on segment reuse. Check the printed request count after the first real run.
+- TomTom has no data for small roads, and one segment can span many kilometres (see the limits above); the snapshot is one moment in time, shown to users as "Traffic data: <fetched_at>".
+
+
+## C++ class hierarchies (`src/oop/`)
+
+Thin C++ classes wrap the C core. The C structures are owned privately and freed in
+destructors (RAII); callers use the abstract interfaces and never see the C types.
+
+| Hierarchy | Base (abstract) | Derived | Chosen by |
+|---|---|---|---|
+| Traffic data | `TrafficProvider` | `FreeFlowProvider`, `SnapshotProvider` | `makeTrafficProvider(net, path)` at startup |
+| Scenarios | `Scenario` | `NormalScenario`, `RainScenario`, `RushHourScenario`, `IncidentScenario` | `makeScenario(kind, settings, incident)` per request |
+| Errors | `std::runtime_error` | `LoadError` | thrown by `SnapshotProvider` |
+
+- **Abstraction:** routing code calls `provider.trafficIndex(edge)` and `scenario->apply(state)` without knowing the concrete class.
+- **Polymorphism:** `apply()` and `trafficIndex()` are virtual; one `std::unique_ptr<Scenario>` behaves as rain, rush hour or incident.
+- **Inheritance:** four scenario classes and two providers reuse their base interface; `LoadError` extends `std::runtime_error`.
+- **Encapsulation:** `SnapshotProvider` keeps the C `TrafficSnapshot` private; scenario constructors reject factors outside (0, 1] (`std::invalid_argument`), so an existing object is always valid.
+
+`ScenarioKind` (the enum the website's names map to) is separate from the `Scenario` class.
+`applyScenario()` remains as a wrapper (`makeScenario(...)->apply(state)`) that returns -1 on invalid settings.
+
+**Using a snapshot:**
+
+```cpp
+std::string warning;
+auto provider = rl::makeTrafficProvider(net, "data/traffic/traffic.csv", &warning);
+// missing file -> FreeFlowProvider and a warning; speeds are then "estimated"
+rl::TrafficState state(net);
+rl::applyProvider(state, *provider);                       // edges with data get measured speeds
+auto scenario = rl::makeScenario(kind, rl::ScenarioSettings{});
+scenario->apply(state);
+// show provider->description(), e.g. "snapshot 2026-11-22 10:08"
+```
+
+`applyProvider` sets travel time to length / measured speed, as the design specifies; a
+measured speed of 0 marks the edge closed and keeps its free-flow time. Snapshot edges are
+marked `DataSource::Historical` because a saved snapshot is not live traffic, so route
+summaries count them under "typical for this time". The user interface should show
+`provider->description()` (the snapshot time) next to that label.
+
+**Not done here:** the server still calls the live TomTom client; switching it to
+`makeTrafficProvider` is the server-wiring task.

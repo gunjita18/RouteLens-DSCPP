@@ -92,6 +92,7 @@ add_library(routelens_osm STATIC
     src/algorithms/route_ranking.cpp
 )
 target_compile_options(routelens_osm PRIVATE -Wall -Wextra)
+target_link_libraries(routelens_osm PUBLIC routelens_ds)
 
 # Runs on a small built-in network; also checks the real Dehradun CSVs when
 # data/osm/nodes.csv and edges.csv are present (they are not in git).
@@ -131,7 +132,8 @@ target_compile_options(routelens_osm_info PRIVATE -Wall -Wextra -pedantic)
 add_executable(test_osm tests/test_osm.cpp)
 target_link_libraries(test_osm PRIVATE routelens_osm)
 target_compile_options(test_osm PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME OsmLoaderTests COMMAND test_osm)
+add_test(NAME OsmLoaderTests COMMAND test_osm
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 # Dijkstra shortest-path tests
 add_executable(test_dijkstra tests/test_dijkstra.cpp)
 target_link_libraries(test_dijkstra PRIVATE routelens_osm)
@@ -186,7 +188,8 @@ add_library(routelens_traffic STATIC
     src/traffic/tomtom_client.cpp
     src/traffic/eta.cpp
     src/traffic/junctions.cpp
-    src/traffic/scenario.cpp
+    src/oop/scenario.cpp
+    src/oop/traffic_provider.cpp
     src/data/http_client.cpp
     src/data/geo.cpp
 )
@@ -233,3 +236,48 @@ foreach(_rl_target IN LISTS _rl_all_targets)
         target_compile_options(${_rl_target} PRIVATE -UNDEBUG)
     endif()
 endforeach()
+
+# ---------------------------------------------------------------- Hand-written C data structures
+# Pure C11, no STL. One .c/.h pair per structure, one test file per structure.
+add_library(routelens_ds STATIC
+    src/core/dynarray.c
+    src/core/list.c
+    src/core/hashtable.c
+    src/core/queue.c
+    src/core/bfs.c
+    src/core/traffic_reader.c
+    src/core/search.c
+    src/core/dsu.c
+)
+target_include_directories(routelens_ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
+
+foreach(ds_test dynarray list hashtable queue bfs traffic_reader search dsu)
+    add_executable(test_${ds_test} tests/test_${ds_test}.c)
+    target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
+    target_compile_options(test_${ds_test} PRIVATE -Wall -Wextra -pedantic)
+    # WORKING_DIRECTORY = repo root so test_hashtable can find data/osm/nodes.csv
+    add_test(NAME ${ds_test}_test COMMAND test_${ds_test}
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endforeach()
+
+# ---------------------------------------------------------------- traffic snapshot script
+# Offline unit tests for preprocess/fetch_traffic.py (no network, no API key).
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME fetch_traffic_test
+             COMMAND ${Python3_EXECUTABLE} preprocess/test_fetch_traffic.py
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+# ---------------------------------------------------------------- traffic providers (class hierarchy)
+add_executable(test_traffic_provider tests/test_traffic_provider.cpp)
+target_link_libraries(test_traffic_provider PRIVATE routelens_traffic)
+target_compile_options(test_traffic_provider PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME TrafficProviderTests COMMAND test_traffic_provider)
+
+# ---------------------------------------------------------------- lookup experiment: hash table vs binary search
+# Timings are only meaningful with optimisation, so this target always uses -O2.
+add_executable(routelens_lookup_benchmark src/app/lookup_benchmark.c)
+target_link_libraries(routelens_lookup_benchmark PRIVATE routelens_ds)
+target_compile_options(routelens_lookup_benchmark PRIVATE -O2 -Wall -Wextra -pedantic)
