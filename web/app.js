@@ -419,7 +419,7 @@
               ['Traffic', r.traffic]);
     if (r.coverage) {
       rows.push(['Data', 'live ' + pct(r.coverage.live_pct) +
-                         ', typical ' + pct(r.coverage.typical_pct) +
+                         ', saved snapshot ' + pct(r.coverage.typical_pct) +
                          ', estimated ' + pct(r.coverage.estimated_pct)]);
     }
     var dl = el('dl');
@@ -464,7 +464,11 @@
     fetch('/api/traffic/status')
       .then(function (r) { return r.json(); })
       .then(function (s) {
-        $('traffic-badge').textContent = 'traffic: ' + (s.source === 'live' ? 'live' : 'free-flow fallback');
+        // The server never calls TomTom: it reads a snapshot saved earlier, so the
+        // page shows when that data was taken instead of calling it "live".
+        $('traffic-badge').textContent = s.source === 'snapshot'
+          ? 'Traffic data: ' + (s.fetched_at || 'time unknown') + ' (saved snapshot)'
+          : 'Traffic: estimated (free-flow speeds)';
       })
       .catch(function () { $('traffic-badge').textContent = 'server offline'; });
   }

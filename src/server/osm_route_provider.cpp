@@ -131,8 +131,34 @@ double overlapRatio(const std::vector<int>& first,
 }  // namespace
 
 OsmRouteProvider::OsmRouteProvider(const OsmNetwork& network,
-                                   const JunctionIndex* junctions)
-    : network_(network), junctions_(junctions) {}
+                                   const JunctionIndex* junctions,
+                                   const TrafficProvider* traffic)
+    : network_(network), junctions_(junctions) {
+    if (traffic == nullptr || network.graph == nullptr) return;
+
+    // Read the measured traffic once. Travel time with data is length / measured
+    // speed (the design's rule); a measured speed of 0 marks a closed road in the
+    // data, which keeps the free-flow time (as TrafficState does) rather than
+    // making the edge infinitely slow.
+    const int edges = network.graph->edge_count;
+    snapshotFactor_.assign(edges, 1.0);
+    snapshotIndex_.assign(edges, 0.0);
+    snapshotHasData_.assign(edges, 0);
+    for (int e = 0; e < edges; ++e) {
+        if (!traffic->hasData(e)) continue;
+        const Edge& edge = network.graph->edges[e];
+        const double kph = traffic->currentKph(e);
+        const bool closed = kph <= 0.0;
+        const double freeFlowS = std::max(0.0, edge.duration_s);
+        if (!closed && freeFlowS > 0.0) {
+            const double seconds = std::max(0.0, edge.distance_m) / (kph / 3.6);
+            snapshotFactor_[e] = seconds / freeFlowS;
+        }
+        snapshotIndex_[e] = closed ? 1.0 : clampTraffic(traffic->trafficIndex(e));
+        snapshotHasData_[e] = 1;
+        ++edgesWithTraffic_;
+    }
+}
 
 bool OsmRouteProvider::available() const {
     return network_.graph != nullptr &&
@@ -195,11 +221,18 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
         speed[e] = scenarioSpeed(trafficScenario, scenarioSettings, roadClass);
     }
 
+    // Measured traffic (the saved snapshot) applies to the scenarios that build
+    // on current conditions; rain and rush hour start from free flow instead, so a
+    // slowdown is never counted twice.
+    const bool useSnapshot =
+        edgesWithTraffic_ > 0 && scenarioNeedsLiveTraffic(trafficScenario);
+
     ScenarioEffect effect;
     effect.blocked = request.blockedEdges;
     effect.durationFactor.resize(graph->edge_count);
     for (int e = 0; e < graph->edge_count; ++e) {
-        effect.durationFactor[e] = closureFactor[e] / speed[e];
+        effect.durationFactor[e] =
+            closureFactor[e] * (useSnapshot ? snapshotFactor_[e] : 1.0) / speed[e];
     }
 
     // The search must see what the ETA counts: congestion from the traffic
@@ -216,6 +249,9 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
             const double minutes =
                 std::max(0.0, edge.duration_s) / 60.0 * effect.durationFactor[e];
             costs[e] += w.per_congested_minute * (1.0 - speed[e]) * minutes;
+            if (useSnapshot) {
+                costs[e] += w.per_congested_minute * snapshotIndex_[e] * minutes;
+            }
             if (junctions_) {
                 const int j = junctions_->junctionOf(edge.to);
                 if (j >= 0 && j != junctions_->junctionOf(edge.from)) {
@@ -294,6 +330,8 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
         double totalDistanceM = 0.0;
         double totalTrafficWeight = 0.0;
         double speedWeightedM = 0.0;
+        double dataM = 0.0;        // metres of the route that have measured traffic
+        double dataRatioM = 0.0;   // same, weighted by current / free-flow speed
         std::vector<int> routeEdges;
 
         appendPoint(route, network_.pos[path.front()]);
@@ -324,8 +362,14 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
             durationSeconds += edgeSeconds;
             speedWeightedM += speed[edgeIndex] * std::max(0.0, edge.distance_m);
 
-            const double traffic =
-                clampTraffic(edge.traffic_index + (1.0 - speed[edgeIndex]));
+            double measuredIndex = 0.0;
+            if (useSnapshot && snapshotHasData_[edgeIndex]) {
+                measuredIndex = snapshotIndex_[edgeIndex];
+                dataM += std::max(0.0, edge.distance_m);
+                dataRatioM += (1.0 - measuredIndex) * std::max(0.0, edge.distance_m);
+            }
+            const double traffic = clampTraffic(
+                edge.traffic_index + (1.0 - speed[edgeIndex]) + measuredIndex);
             trafficWeightedSeconds += traffic * edgeSeconds;
             totalTrafficWeight += edgeSeconds;
 
@@ -377,13 +421,23 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
         route.freeFlowEtaSeconds = freeFlowSeconds + waitSeconds;
         route.etaSeconds = candidate.rawEta;
 
-        // No live or historical traffic is applied by this provider yet.
-        // Do not label the route as live traffic. A traffic scenario is an
-        // estimate too; its level comes from the traffic module's thresholds.
+        // Data labels. A saved snapshot is not live traffic, so livePct stays 0;
+        // the share of the route covered by snapshot data is reported as
+        // "typical" (the time of the snapshot is shown by /api/traffic/status),
+        // and the rest is an estimate from free-flow speeds. The level uses the
+        // traffic module's thresholds on the length-weighted speed ratio over the
+        // edges that have data. A traffic scenario is an estimate too.
         route.livePct = 0.0;
         route.typicalPct = 0.0;
         route.estimatedPct = 100.0;
         route.trafficLevel = "Estimated";
+        if (useSnapshot && dataM > 0.0) {
+            const double covered = 100.0 * dataM / totalDistanceM;
+            route.typicalPct = covered;
+            route.estimatedPct = 100.0 - covered;
+            route.trafficLevel =
+                levelName(levelForRatio(dataRatioM / dataM, TrafficRules{}));
+        }
         if (trafficScenario == ScenarioKind::Rain ||
             trafficScenario == ScenarioKind::RushHour) {
             const TrafficLevel level =

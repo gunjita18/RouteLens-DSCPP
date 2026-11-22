@@ -9,6 +9,9 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <map>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -55,6 +58,28 @@ bool passesThrough(const rl::RouteInfo& route, const rl::LatLon& p) {
     }
     return false;
 }
+
+// A traffic source for tests: chosen edges have a measured speed and congestion.
+// Deriving from the abstract TrafficProvider is the point: the route provider
+// does not know, or care, that these numbers are made up.
+class FakeTraffic : public rl::TrafficProvider {
+public:
+    void set(int edge, double kph, double index) { data_[edge] = {kph, index}; }
+    double trafficIndex(int edge) const override {
+        auto it = data_.find(edge);
+        return it == data_.end() ? 0.0 : it->second.second;
+    }
+    bool hasData(int edge) const override { return data_.count(edge) > 0; }
+    double currentKph(int edge) const override {
+        auto it = data_.find(edge);
+        return it == data_.end() ? 0.0 : it->second.first;
+    }
+    int edgesWithData() const override { return static_cast<int>(data_.size()); }
+    std::string description() const override { return "fake test data"; }
+
+private:
+    std::map<int, std::pair<double, double>> data_;   // edge -> (km/h, congestion index)
+};
 
 rl::RouteRequest request() {
     rl::RouteRequest r;
@@ -217,6 +242,91 @@ int main() {
             assert(f.net.graph->edges[e].traffic_index == 0.0);
         }
         f.net.roadClass.clear();
+    }
+
+    // ---- measured traffic (snapshot) in the route provider ----
+    // Free-flow speed of the fixture's edges is 36 km/h (2000 m in 200 s).
+    {
+        const auto levelOf = [&](const std::vector<rl::RouteInfo>& routes, bool north) {
+            for (const auto& r : routes) {
+                if (passesThrough(r, f.net.pos[1]) == north) return r;
+            }
+            assert(false && "route not found");
+            return routes[0];
+        };
+
+        // North road's first edge measured at 18 km/h (half free-flow speed):
+        // 2000 m / 5 m/s = 400 s instead of 200 s.
+        FakeTraffic slowNorth;
+        slowNorth.set(f.north1, 18.0, 0.5);
+        rl::OsmRouteProvider measured(f.net, nullptr, &slowNorth);
+        assert(measured.edgesWithTraffic() == 1);
+
+        std::vector<rl::RouteInfo> routes = measured.compute(request());
+        assert(routes.size() == 2);
+        assert(passesThrough(routes[0], f.net.pos[2]) && routes[0].recommended);   // south: 500 < 600
+        const rl::RouteInfo north = levelOf(routes, true);
+        const rl::RouteInfo south = levelOf(routes, false);
+        assert(std::abs(north.etaSeconds - 600.0) < 1e-6);            // 400 measured + 200 free flow
+        assert(std::abs(north.freeFlowEtaSeconds - 400.0) < 1e-6);    // "no traffic" ETA is unchanged
+        assert(std::abs(south.etaSeconds - 500.0) < 1e-6);
+        // Half of the north route has data: 50% snapshot, 50% estimated, speed ratio 0.5 -> Medium.
+        assert(std::abs(north.typicalPct - 50.0) < 1e-6 && std::abs(north.estimatedPct - 50.0) < 1e-6);
+        assert(north.livePct == 0.0);                                  // a snapshot is never "live"
+        assert(north.trafficLevel == std::string("Medium"));
+        // The south route has no data at all: estimated, with no level claimed.
+        assert(south.typicalPct == 0.0 && south.estimatedPct == 100.0);
+        assert(south.trafficLevel == std::string("Estimated"));
+
+        // Rain and rush hour ignore measured data and start from free flow.
+        rl::RouteRequest r = request();
+        r.scenario = "rain";
+        routes = measured.compute(r);
+        assert(routes.size() == 2 && passesThrough(routes[0], f.net.pos[1]));
+        assert(std::abs(routes[0].etaSeconds - 400.0 / rl::ScenarioSettings{}.rainFactor) < 1e-6);
+        assert(routes[0].typicalPct == 0.0);
+        // Incident builds on current conditions, so the measured data still applies.
+        r.scenario = "incident";
+        routes = measured.compute(r);
+        assert(passesThrough(routes[0], f.net.pos[2]));
+
+        // Faster than free flow: the road is quicker than the default speed says.
+        FakeTraffic fast;
+        fast.set(f.north1, 72.0, 0.0);                                 // 2000 m / 20 m/s = 100 s
+        rl::OsmRouteProvider quick(f.net, nullptr, &fast);
+        routes = quick.compute(request());
+        assert(passesThrough(routes[0], f.net.pos[1]));
+        assert(std::abs(levelOf(routes, true).etaSeconds - 300.0) < 1e-6);
+        assert(levelOf(routes, true).trafficLevel == std::string("Low"));
+
+        // Measured speed 0 marks a closed road: keep the free-flow time (no
+        // infinite ETA), report the covered part as High.
+        FakeTraffic stopped;
+        stopped.set(f.north1, 0.0, 1.0);
+        rl::OsmRouteProvider halted(f.net, nullptr, &stopped);
+        routes = halted.compute(request());
+        assert(routes.size() == 2);
+        assert(std::abs(levelOf(routes, true).etaSeconds - 400.0) < 1e-6);
+        assert(levelOf(routes, true).trafficLevel == std::string("High"));
+
+        // No data anywhere behaves exactly like having no provider.
+        rl::FreeFlowProvider none;
+        rl::OsmRouteProvider flat(f.net, nullptr, &none);
+        assert(flat.edgesWithTraffic() == 0);
+        routes = flat.compute(request());
+        assert(std::abs(routes[0].etaSeconds - 400.0) < 1e-6 && routes[0].trafficLevel == std::string("Estimated"));
+
+        // Weighting congestion: with a traffic priority the search avoids the jammed road.
+        rl::RouteRequest congested = request();
+        congested.wTime = 0.0;
+        congested.wTraffic = 1.0;
+        routes = measured.compute(congested);
+        assert(passesThrough(routes[0], f.net.pos[2]));
+
+        // The provider read the data once; it never writes to the shared network.
+        for (int e = 0; e < f.net.graph->edge_count; ++e) {
+            assert(f.net.graph->edges[e].traffic_index == 0.0);
+        }
     }
 
     // ---- malformed scenario vectors are rejected ----
