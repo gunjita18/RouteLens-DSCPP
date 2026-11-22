@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <fstream>
+#include <new>
+#include <unordered_map>
 #include <utility>
+
+#include "../core/bfs.h"
 
 namespace rl {
 
@@ -52,64 +56,6 @@ double edgeSpeedKph(const std::string& highway, const std::string& maxspeedKph) 
     return defaultSpeedKph(highway);
 }
 
-// ---------------------------------------------------------------- Tarjan
-
-std::vector<int> tarjanScc(int nodeCount, const std::vector<std::vector<int>>& adj,
-                           int& componentCount) {
-    std::vector<int> index(nodeCount, -1), low(nodeCount, 0), comp(nodeCount, -1);
-    std::vector<char> onStack(nodeCount, 0);
-    std::vector<int> stack;
-    stack.reserve(nodeCount);
-
-    struct Frame {
-        int v;
-        size_t next;   // next neighbour of v to look at
-    };
-    std::vector<Frame> call;   // replaces the recursion stack
-    int nextIndex = 0;
-    componentCount = 0;
-
-    for (int s = 0; s < nodeCount; s++) {
-        if (index[s] != -1) continue;
-        index[s] = low[s] = nextIndex++;
-        stack.push_back(s);
-        onStack[s] = 1;
-        call.push_back({ s, 0 });
-
-        while (!call.empty()) {
-            int v = call.back().v;
-            if (call.back().next < adj[v].size()) {
-                int w = adj[v][call.back().next++];
-                if (index[w] == -1) {             // tree edge: "recurse" into w
-                    index[w] = low[w] = nextIndex++;
-                    stack.push_back(w);
-                    onStack[w] = 1;
-                    call.push_back({ w, 0 });
-                } else if (onStack[w]) {          // back edge into the current SCC
-                    low[v] = std::min(low[v], index[w]);
-                }
-            } else {                              // all neighbours done: "return" from v
-                if (low[v] == index[v]) {         // v is the root of an SCC
-                    int w;
-                    do {
-                        w = stack.back();
-                        stack.pop_back();
-                        onStack[w] = 0;
-                        comp[w] = componentCount;
-                    } while (w != v);
-                    componentCount++;
-                }
-                call.pop_back();
-                if (!call.empty()) {
-                    int parent = call.back().v;
-                    low[parent] = std::min(low[parent], low[v]);
-                }
-            }
-        }
-    }
-    return comp;
-}
-
 // ---------------------------------------------------------------- CSV
 
 // Splits one CSV line; supports quoted fields with "" escapes.
@@ -155,6 +101,41 @@ static bool parseGeometry(const std::string& s, std::vector<LatLon>& out) {
     return out.size() >= 2;
 }
 
+// ---------------------------------------------------------------- IdIndex
+
+namespace {
+constexpr int kInitialIdBuckets = 1024;
+}
+
+IdIndex::IdIndex() {
+    if (ht_init(&table_, kInitialIdBuckets) != 0) throw std::bad_alloc();
+}
+
+IdIndex::~IdIndex() { ht_free(&table_); }
+
+IdIndex::IdIndex(IdIndex&& o) noexcept : table_(o.table_) {
+    o.table_ = HashTable{ nullptr, 0, 0, 0 };     // moved-from: empty, safe to destroy
+}
+
+IdIndex& IdIndex::operator=(IdIndex&& o) noexcept {
+    if (this != &o) {
+        ht_free(&table_);
+        table_ = o.table_;
+        o.table_ = HashTable{ nullptr, 0, 0, 0 };
+    }
+    return *this;
+}
+
+bool IdIndex::put(long long osmId, int index) {
+    return table_.buckets != nullptr && ht_put(&table_, osmId, index) == 0;
+}
+
+int IdIndex::find(long long osmId) const {
+    int index = -1;
+    if (table_.buckets != nullptr && ht_get(&table_, osmId, &index)) return index;
+    return -1;
+}
+
 // ---------------------------------------------------------------- OsmNetwork
 
 OsmNetwork::~OsmNetwork() { graph_free(graph); }
@@ -188,10 +169,11 @@ struct RawEdge {
 };
 }  // namespace
 
-bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err) {
+bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err,
+                    const OsmLoadOptions& options) {
     OsmLoadStats st;
 
-    // ---- 1. nodes: OSM id -> raw index (hash map)
+    // ---- 1. nodes: OSM id -> raw index (C hash table)
     std::ifstream nin(dir + "/nodes.csv");
     if (!nin) { err = "cannot open " + dir + "/nodes.csv (run preprocess/export_osm.py)"; return false; }
     std::string line;
@@ -202,7 +184,7 @@ bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err) {
     std::vector<long long> rawId;
     std::vector<LatLon> rawPos;
     std::vector<char> rawSignal;
-    std::unordered_map<long long, int> rawIndex;
+    IdIndex rawIndex;
     int lineNo = 1;
     while (std::getline(nin, line)) {
         lineNo++;
@@ -215,10 +197,11 @@ bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err) {
             err = dir + "/nodes.csv:" + std::to_string(lineNo) + ": malformed row";
             return false;
         }
-        if (!rawIndex.emplace(id, (int)rawId.size()).second) {
+        if (rawIndex.find(id) != -1) {
             err = dir + "/nodes.csv:" + std::to_string(lineNo) + ": duplicate osm_id " + f[0];
             return false;
         }
+        if (!rawIndex.put(id, (int)rawId.size())) { err = "out of memory reading nodes.csv"; return false; }
         rawId.push_back(id);
         rawPos.push_back({ lat, lon });
         rawSignal.push_back(f[3] == "1");
@@ -235,7 +218,6 @@ bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err) {
         return false;
     }
     std::vector<RawEdge> raw;
-    std::vector<std::vector<int>> adj(st.rawNodes);
     while (std::getline(ein, line)) {
         if (line.empty() || line == "\r") continue;
         st.rawEdges++;
@@ -248,29 +230,56 @@ bool loadOsmNetwork(const std::string& dir, OsmNetwork& out, std::string& err) {
             continue;
         }
         auto iu = rawIndex.find(uid), iv = rawIndex.find(vid);
-        if (iu == rawIndex.end() || iv == rawIndex.end()) { st.badRows++; continue; }
+        if (iu < 0 || iv < 0) { st.badRows++; continue; }
         if (uid == vid) { st.selfLoops++; continue; }
-        e.u = iu->second;
-        e.v = iv->second;
+        e.u = iu;
+        e.v = iv;
         e.highway = f[3];
         e.maxspeed = f[4];
-        adj[e.u].push_back(e.v);
         raw.push_back(std::move(e));
     }
 
-    // ---- 3. largest strongly connected component
-    std::vector<int> comp = tarjanScc(st.rawNodes, adj, st.sccCount);
-    std::vector<int> compSize(st.sccCount, 0);
-    for (int c : comp) compSize[c]++;
-    int best = (int)(std::max_element(compSize.begin(), compSize.end()) - compSize.begin());
+    // ---- 3. graph cleaning: forward + reverse BFS (core/bfs.c)
+    // BFS from a centre node keeps exactly the nodes that can reach the centre
+    // and can be reached from it: the centre's strongly connected component.
+    // The centre is the node nearest options.centre. If its component has at
+    // most half of all nodes (the centre sits on an isolated stub), the next
+    // nearest nodes are tried and the largest result is kept. A component with
+    // more than half of all nodes must be the largest one, so the search stops.
+    std::vector<int> edgeFrom(raw.size()), edgeTo(raw.size());
+    for (size_t i = 0; i < raw.size(); i++) { edgeFrom[i] = raw[i].u; edgeTo[i] = raw[i].v; }
+
+    const int n = st.rawNodes;
+    const int m = (int)raw.size();
+    constexpr int kMaxCentreTries = 20;
+    std::vector<char> tried(n, 0), candidate(n, 0), keep(n, 0);
+    int bestCount = 0;
+    for (int attempt = 0; attempt < kMaxCentreTries && 2 * bestCount <= n; attempt++) {
+        int centre = -1;
+        double nearest = 0.0;
+        for (int i = 0; i < n; i++) {                       // linear nearest-node search
+            if (tried[i]) continue;
+            double d = haversineMeters(rawPos[i], options.centre);
+            if (centre < 0 || d < nearest) { centre = i; nearest = d; }
+        }
+        if (centre < 0) break;                              // every node already tried
+        tried[centre] = 1;
+        int count = bfs_strong_core(n, m, edgeFrom.data(), edgeTo.data(), centre, candidate.data());
+        if (count < 0) { err = "graph cleaning failed (out of memory)"; return false; }
+        if (count > bestCount) {
+            bestCount = count;
+            st.bfsCentre = centre;
+            keep = candidate;
+        }
+    }
 
     // ---- 4. re-index the kept nodes 0..n-1
     OsmNetwork net;
     std::vector<int> newIndex(st.rawNodes, -1);
     for (int i = 0; i < st.rawNodes; i++) {
-        if (comp[i] != best) continue;
+        if (!keep[i]) continue;
         newIndex[i] = (int)net.osmId.size();
-        net.indexOf[rawId[i]] = newIndex[i];
+        if (!net.indexOf.put(rawId[i], newIndex[i])) { err = "out of memory building node index"; return false; }
         net.osmId.push_back(rawId[i]);
         net.pos.push_back(rawPos[i]);
         net.isSignal.push_back(rawSignal[i]);
