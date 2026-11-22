@@ -268,13 +268,10 @@
         if (mySeq !== requestSeq) { return; }   // a newer request is already running
         if (res.status === 200) {
           onOk(res.body);
-        } else if (res.status === 429) {
-          clearRoutes();
-          showBanner('Too many requests. Wait a second and try again.');
         } else if (res.status === 501) {
           clearRoutes();
           drawSnapped(res.body.snapped);
-          showBanner('Routing engine not connected yet. No routes can be computed.');
+          showBanner('The server has no routing engine loaded. No routes can be computed.');
         } else {
           clearRoutes();
           showBanner('Request rejected: ' + (res.body.error || res.status));

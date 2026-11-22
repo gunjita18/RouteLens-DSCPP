@@ -14,7 +14,6 @@
 #include "crow.h"
 #include "preview_provider.hpp"
 #include "request_params.hpp"
-#include "route_cache.hpp"
 #include "route_provider.hpp"
 #include "osm_route_provider.hpp"
 #include "../algorithms/scenario.hpp"
@@ -22,8 +21,6 @@
 #include "../oop/traffic_provider.hpp"
 #include "../spatial/road_snapper.hpp"
 #include "../traffic/junctions.hpp"
-#include "../traffic/lru_cache.hpp"
-#include "../traffic/rate_limiter.hpp"
 
 namespace {
 
@@ -256,17 +253,13 @@ bool parseClosures(const crow::json::rvalue& body, std::vector<rl::Closure>& out
 int main() {
     crow::SimpleApp app;
 
-    // Protects /api/routes from request floods: more than 10 requests in one
-    // second get HTTP 429.
-    constexpr int kRouteRequestsPerWindow = 10;
-    constexpr int kRouteWindowSeconds = 1;
-    rl::RateLimiter routeLimiter(kRouteRequestsPerWindow, std::chrono::seconds(kRouteWindowSeconds));
-    std::atomic<int> rejectedRequests{0};
-    // Route results are cached for 5 minutes, so repeating a query does not
-    // recompute routes. (Traffic is a fixed snapshot, so cached routes stay valid.)
-    rl::RouteCache routeCache(256, 300.0);
+    // Phase III: the route-result cache (LRU) and the request rate limiter were
+    // removed from the server (outside the syllabus; with a saved traffic
+    // snapshot there is no TomTom quota to protect). Both remain in Git history.
 
-    // The routing engine plugs in here. Until it exists the server answers 501.
+    // Route provider. It starts as NullRouteProvider (answers 501) and is
+    // replaced by the real OSM routing provider once the road network has
+    // loaded (below), so 501 now only means the network could not be loaded.
     // ROUTELENS_PREVIEW=1 switches on SAMPLE routes for showing the interface; they
     // are not computed from the road network and are labelled as such everywhere.
     std::unique_ptr<rl::RouteProvider> provider = std::make_unique<rl::NullRouteProvider>();
@@ -373,27 +366,11 @@ int main() {
         response["fetched_at"] = traffic->fetchedAt();
         response["edges_with_data"] = traffic->edgesWithData();
         response["warning"] = trafficWarning;
-        // Limit on incoming /api/routes requests.
-        response["rate_limit"]["max_requests"] = kRouteRequestsPerWindow;
-        response["rate_limit"]["window_seconds"] = kRouteWindowSeconds;
-        response["rate_limit"]["current_count"] = routeLimiter.current_count();
-        response["rate_limit"]["rejected_total"] = rejectedRequests.load();
-        response["route_cache"]["size"] = routeCache.size();
-        response["route_cache"]["capacity"] = routeCache.capacity();
-        response["route_cache"]["hits"] = routeCache.hits();
-        response["route_cache"]["misses"] = routeCache.misses();
-        response["route_cache"]["ttl_seconds"] = routeCache.ttlSeconds();
         return response;
     });
 
     CROW_ROUTE(app, "/api/routes")
     ([&](const crow::request& req) {
-        if (!routeLimiter.allow_request()) {
-            ++rejectedRequests;
-            crow::response tooMany = jsonError(429, "too many requests, try again in a moment");
-            tooMany.set_header("Retry-After", "1");
-            return tooMany;
-        }
         rl::ParamGetter get = [&](const std::string& key) -> std::optional<std::string> {
             const char* v = req.url_params.get(key);
             if (!v) {
@@ -431,23 +408,13 @@ int main() {
             return jsonResponse(501, body);
         }
 
-        // Same query within 5 minutes: answer from the cache, no recomputation.
-        const std::string cacheKey = rl::RouteCache::makeKey(*parsed);
-        std::optional<std::vector<rl::RouteInfo>> routes = routeCache.get(cacheKey);
-        const bool fromCache = routes.has_value();
-        if (!routes) {
-            routes = provider->compute(*parsed);
-            if (!routes->empty()) {
-                routeCache.put(cacheKey, *routes);
-            }
-        }
+        const std::vector<rl::RouteInfo> routes = provider->compute(*parsed);
 
         crow::json::wvalue out;
         out["scenario"] = parsed->scenario;
         out["preview"] = provider->isPreview();   // true = sample routes, not real
-        out["from_cache"] = fromCache;
         putSnapped(out, from, to);
-        putRoutes(out, *routes);
+        putRoutes(out, routes);
         return jsonResponse(200, out);
     });
 
@@ -465,12 +432,6 @@ int main() {
     //     slow_factor 1.1..20, default 3 (travel-time multiplier, slow mode only)
     CROW_ROUTE(app, "/api/scenario").methods(crow::HTTPMethod::Post)
     ([&](const crow::request& req) {
-        if (!routeLimiter.allow_request()) {
-            ++rejectedRequests;
-            crow::response tooMany = jsonError(429, "too many requests, try again in a moment");
-            tooMany.set_header("Retry-After", "1");
-            return tooMany;
-        }
         auto body = crow::json::load(req.body);
         if (!body || body.t() != crow::json::type::Object) {
             return jsonError(400, "request body must be a JSON object");
@@ -555,15 +516,8 @@ int main() {
         out["reachable"]["hops_with_closures"] = after.hops;
         out["routes"] = crow::json::wvalue::list();
 
-        // The route without closures is the same query /api/routes answers, so
-        // share its cache: changing only the closures then skips the slow part.
-        const std::string baselineKey = rl::RouteCache::makeKey(*parsed);
-        std::optional<std::vector<rl::RouteInfo>> cachedBaseline = routeCache.get(baselineKey);
-        std::vector<rl::RouteInfo> baseline =
-            cachedBaseline ? *cachedBaseline : provider->compute(*parsed);
-        if (!cachedBaseline && !baseline.empty()) {
-            routeCache.put(baselineKey, baseline);
-        }
+        // The route without closures (the same query /api/routes answers).
+        const std::vector<rl::RouteInfo> baseline = provider->compute(*parsed);
         if (!baseline.empty()) {
             out["baseline"]["eta_s"] = baseline.front().etaSeconds;
             out["baseline"]["distance_km"] = baseline.front().distanceKm;

@@ -16,24 +16,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
-add_executable(test_lru_cache
-    tests/test_lru_cache.cpp
-)
-target_include_directories(test_lru_cache PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/traffic
-)
-target_compile_options(test_lru_cache PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME LRUCacheTests COMMAND test_lru_cache)
-
-add_executable(test_rate_limiter
-    tests/test_rate_limiter.cpp
-)
-target_include_directories(test_rate_limiter PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/traffic
-)
-target_compile_options(test_rate_limiter PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME RateLimiterTests COMMAND test_rate_limiter)
-
 add_executable(test_request_params
     tests/test_request_params.cpp
 )
@@ -44,17 +26,6 @@ target_compile_options(test_request_params PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RequestParamsTests COMMAND test_request_params)
 
 find_package(Threads REQUIRED)
-
-# Route-result cache (LRU + 5-minute expiry), including a multi-threaded check.
-add_executable(test_route_cache
-    tests/test_route_cache.cpp
-)
-target_include_directories(test_route_cache PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
-)
-target_link_libraries(test_route_cache PRIVATE Threads::Threads)
-target_compile_options(test_route_cache PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME RouteCacheTests COMMAND test_route_cache)
 
 # Interface-preview provider (sample routes, clearly labelled).
 add_executable(test_preview_provider
