@@ -2,6 +2,7 @@
 
 #include "../algorithms/scenario.hpp"
 #include "../core/penalty.h"
+#include "../core/sort.h"
 #include "../oop/route.hpp"
 #include "../oop/route_finder.hpp"
 #include "../oop/scenario.hpp"
@@ -44,6 +45,19 @@ struct Candidate {
     double rawTraffic = 0.0;
     std::vector<int> path;
 };
+
+// One route's place in the ranking, as a plain struct the C merge sort can copy.
+struct RankItem {
+    double score;   // lower is better
+    int position;   // index into the candidate list
+};
+
+// Comparator in qsort style for merge_sort: by score, lower first.
+int compareRankItems(const void* a, const void* b) {
+    const double sa = static_cast<const RankItem*>(a)->score;
+    const double sb = static_cast<const RankItem*>(b)->score;
+    return (sa > sb) - (sa < sb);
+}
 
 bool validNode(const OsmNetwork& net, int node) {
     return net.graph && node >= 0 && node < net.graph->node_count;
@@ -546,17 +560,27 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
         candidate.route.score = score;
     }
 
-    std::stable_sort(
-        candidates.begin(), candidates.end(),
-        [](const Candidate& a, const Candidate& b) {
-            return a.route.score < b.route.score;
-        });
-
+    // Rank by score with the C merge sort (src/core/sort.c). It copies elements
+    // byte by byte, so it sorts plain (score, position) pairs rather than the
+    // candidates themselves (which hold strings and vectors). Merge sort is
+    // stable: routes with equal scores keep their order, so the penalty
+    // method's cheapest route stays ahead of an equally scored alternative.
+    std::vector<RankItem> ranking(candidates.size());
     for (std::size_t i = 0; i < candidates.size(); ++i) {
-        candidates[i].route.name =
-            "Route " + std::to_string(i + 1);
-        candidates[i].route.recommended = (i == 0);
-        result.push_back(std::move(candidates[i].route));
+        ranking[i] = RankItem{ candidates[i].route.score, static_cast<int>(i) };
+    }
+    if (merge_sort(ranking.data(), ranking.size(), sizeof(RankItem), compareRankItems) != 0) {
+        // Only out of memory; keep the order the routes were generated in.
+        for (std::size_t i = 0; i < ranking.size(); ++i) {
+            ranking[i].position = static_cast<int>(i);
+        }
+    }
+
+    for (std::size_t i = 0; i < ranking.size(); ++i) {
+        Candidate& candidate = candidates[ranking[i].position];
+        candidate.route.name = "Route " + std::to_string(i + 1);
+        candidate.route.recommended = (i == 0);
+        result.push_back(std::move(candidate.route));
     }
 
     return result;
