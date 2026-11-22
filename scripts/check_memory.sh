@@ -8,8 +8,8 @@
 # road network are slow under Valgrind (about a minute); that is expected.
 set -u
 BUILD="${1:-build}"
-C_TESTS="dynarray list hashtable queue bfs traffic_reader search dsu"
-CPP_TESTS="traffic_provider scenarios osm route_provider"
+C_TESTS="dynarray list hashtable queue bfs traffic_reader search dsu minheap stack sort c_dijkstra c_penalty"
+CPP_TESTS="traffic_provider scenarios osm route_provider c_routing_real"
 
 command -v valgrind >/dev/null || { echo "valgrind not found (sudo apt install valgrind)"; exit 2; }
 [ -d "$BUILD" ] || { echo "build directory '$BUILD' not found; build the project first"; exit 2; }

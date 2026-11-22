@@ -1,27 +1,13 @@
 #include "search.h"
 
 #include <stdlib.h>
-#include <string.h>
 
-/* ---- merge sort of KeyValue by key -----------------------------------------
- * Bottom-up: merge runs of width 1, 2, 4, ... between two buffers. Always
- * O(n log n). Stable because on equal keys the element of the LEFT run is taken
- * first. No recursion, so no stack depth concern. */
-static void merge_sort(KeyValue *a, KeyValue *tmp, int n) {
-    KeyValue *src = a, *dst = tmp;
-    for (int width = 1; width < n; width *= 2) {
-        for (int lo = 0; lo < n; lo += 2 * width) {
-            int mid = lo + width < n ? lo + width : n;
-            int hi = lo + 2 * width < n ? lo + 2 * width : n;
-            int i = lo, j = mid, k = lo;
-            while (i < mid && j < hi)
-                dst[k++] = (src[j].key < src[i].key) ? src[j++] : src[i++];   /* left wins ties */
-            while (i < mid) dst[k++] = src[i++];
-            while (j < hi) dst[k++] = src[j++];
-        }
-        KeyValue *swap = src; src = dst; dst = swap;       /* result is now in src */
-    }
-    if (src != a) memcpy(a, src, (size_t)n * sizeof(KeyValue));
+#include "sort.h"
+
+/* Orders pairs by key. merge_sort is stable, so equal keys keep their input order. */
+static int compare_by_key(const void *a, const void *b) {
+    long long x = ((const KeyValue *)a)->key, y = ((const KeyValue *)b)->key;
+    return (x > y) - (x < y);
 }
 
 int sk_build(SortedKeys *s, const long long *keys, const int *values, int n) {
@@ -30,14 +16,15 @@ int sk_build(SortedKeys *s, const long long *keys, const int *values, int n) {
     if (n < 0 || (n > 0 && keys == NULL)) return -1;
     if (n == 0) return 0;
     KeyValue *items = (KeyValue *)malloc((size_t)n * sizeof(KeyValue));
-    KeyValue *tmp = (KeyValue *)malloc((size_t)n * sizeof(KeyValue));
-    if (items == NULL || tmp == NULL) { free(items); free(tmp); return -1; }
+    if (items == NULL) return -1;
     for (int i = 0; i < n; i++) {
         items[i].key = keys[i];
         items[i].value = values ? values[i] : i;
     }
-    merge_sort(items, tmp, n);
-    free(tmp);
+    if (merge_sort(items, (size_t)n, sizeof(KeyValue), compare_by_key) != 0) {
+        free(items);
+        return -1;
+    }
     s->items = items;
     s->count = n;
     return 0;

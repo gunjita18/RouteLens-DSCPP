@@ -79,7 +79,6 @@ add_test(NAME PreviewProviderTests COMMAND test_preview_provider)
 # Road network: the map-data module's graph and OSM loader, plus the KD-tree
 # road snapper that connects clicked points to it.
 add_library(routelens_osm STATIC
-    src/core/graph.c
     src/data/osm_loader.cpp
     src/data/geo.cpp
     src/spatial/kdtree.cpp
@@ -232,11 +231,17 @@ add_library(routelens_ds STATIC
     src/core/traffic_reader.c
     src/core/search.c
     src/core/dsu.c
+    src/core/graph.c
+    src/core/minheap.c
+    src/core/stack.c
+    src/core/sort.c
+    src/core/dijkstra.c
+    src/core/penalty.c
 )
 target_include_directories(routelens_ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
 
-foreach(ds_test dynarray list hashtable queue bfs traffic_reader search dsu)
+foreach(ds_test dynarray list hashtable queue bfs traffic_reader search dsu minheap stack sort c_dijkstra c_penalty)
     add_executable(test_${ds_test} tests/test_${ds_test}.c)
     target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
     target_compile_options(test_${ds_test} PRIVATE -Wall -Wextra -pedantic)
@@ -280,3 +285,10 @@ if(Python3_Interpreter_FOUND)
              COMMAND ${Python3_EXECUTABLE} evaluation/test_eta_reference.py
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+
+# The C routing core against the C++ Dijkstra on the real network (skips itself if data/osm is absent).
+add_executable(test_c_routing_real tests/test_c_routing_real.cpp)
+target_link_libraries(test_c_routing_real PRIVATE routelens_osm)
+target_compile_options(test_c_routing_real PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME CRoutingRealNetworkTests COMMAND test_c_routing_real
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
