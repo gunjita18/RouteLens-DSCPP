@@ -14,10 +14,12 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ libasio-dev libssl-dev zlib1g-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libasio-dev libssl-dev zlib1g-dev valgrind
 
+      # ROUTELENS_VALGRIND=ON adds a second run of every C test under Valgrind;
+      # it fails on any memory leak or invalid memory access.
       - name: Configure (CMake)
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DROUTELENS_VALGRIND=ON
 
       - name: Build (CMake)
         run: cmake --build build -j2
@@ -47,6 +49,7 @@ jobs:
           docker run -d --name routelens-ci -p 18080:18080 routelens
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:18080/api/health && break; sleep 1; done
           curl -sf http://127.0.0.1:18080/api/health | grep -q '"status":"ok"'
+          curl -sf 'http://127.0.0.1:18080/api/places?prefix=Cl' | grep -q '"places"'
 
       - name: Container log (on failure)
         if: failure()

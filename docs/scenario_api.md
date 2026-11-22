@@ -71,7 +71,6 @@ curl -s -X POST http://127.0.0.1:18080/api/scenario \
 | Status | When |
 |---|---|
 | 400 | Body is not a JSON object, a coordinate or weight is invalid, or `closures` is missing, empty, over 20 entries, outside the box, or has a bad `radius_m` / `mode` / `slow_factor` |
-| 429 | More than 10 requests in one second (limiter shared with `/api/routes`); retry after 1 s |
 | 422 | A click is more than 500 m from any road, or start and end snap to the same junction |
 | 501 | Routing engine not connected |
 | 503 | Road network not loaded |
@@ -102,10 +101,10 @@ scenario speeds but keeps the closures.
 
 ## Limits worth knowing
 
-- The no-closure baseline comes from the same 5-minute route cache as
-  `/api/routes`. The first request for a start/end pair takes about 3 s
-  (Yen's algorithm is the slow part); after that, changing only the closures
-  takes about 70 ms.
+- The no-closure baseline is computed again on every request (Phase III
+  removed the server's route cache), so each request does the work of two
+  `/api/routes` calls. Response times are measured in `docs/changes_.md`
+  (Phase III section).
 
 - A heavily slowed road can disappear from `routes` instead of showing a long
   ETA: the penalty search drops routes costing more than 1.5x the cheapest

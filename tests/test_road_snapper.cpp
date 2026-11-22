@@ -72,8 +72,8 @@ int main() {
     {
         OsmNetwork net;
         buildTinyNetwork(net);
-        RoadSnapper snap(net, 20.0);
-        check(snap.pointCount() > 50, "Long road is densified into many points");
+        RoadSnapper snap(net);
+        check(snap.segmentCount() == 2, "One straight segment per two-point road");
 
         // Click 55 m north of the middle of AB. The nearest *node* is far away
         // (~1 km) and the nearest *vertex of another road* (C, ~280 m) is closer
@@ -101,7 +101,7 @@ int main() {
     // ---- empty network -----------------------------------------------------
     {
         OsmNetwork net;
-        RoadSnapper snap(net, 20.0);
+        RoadSnapper snap(net);
         check(!snap.snap({30.3, 78.0}, 500.0).found, "Empty network never finds a road");
     }
 
@@ -113,38 +113,36 @@ int main() {
         std::string err;
         check(rl::loadOsmNetwork(dir, net, err), "Real network loads");
         if (err.empty() && net.graph != nullptr) {
-            auto t0 = std::chrono::steady_clock::now();
-            RoadSnapper snap(net, 20.0);
-            const double ms = std::chrono::duration<double, std::milli>(
-                                  std::chrono::steady_clock::now() - t0).count();
+            RoadSnapper snap(net);
             std::cout << "real network: " << net.stats.keptNodes << " nodes, " << net.stats.keptEdges
-                      << " edges, " << snap.pointCount() << " KD-tree points, built in "
-                      << static_cast<long>(ms) << " ms\n";
+                      << " edges, " << snap.segmentCount() << " road segments\n";
 
             double cosLat = 0;
             for (const LatLon& p : net.pos) cosLat += p.lat;
             cosLat = std::cos(cosLat / net.pos.size() * 3.14159265358979323846 / 180.0);
 
-            // Every snap must agree with brute force over all edges, within the
-            // point spacing (the tree is spaced, brute force is exact).
+            // Every snap must agree with an independent brute force over all
+            // edges. Both are exact, so the distances must be equal.
             std::mt19937 rng(12345);
             std::uniform_real_distribution<double> latD(30.27, 30.40), lonD(77.95, 78.10);
             int compared = 0, worse = 0;
-            double worst = 0;
+            double worst = 0, snapMs = 0;
             for (int i = 0; i < 200; ++i) {
                 const LatLon p{latD(rng), lonD(rng)};
+                const auto t0 = std::chrono::steady_clock::now();
                 SnapResult r = snap.snap(p, 1e9);
+                snapMs += std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
                 double bf = 1e18;
                 for (const auto& shape : net.geometry) bf = std::min(bf, refDistanceM(p, shape, cosLat));
                 ++compared;
-                const double gap = r.roadDistanceM - bf;
+                const double gap = std::abs(r.roadDistanceM - bf);
                 worst = std::max(worst, gap);
-                if (gap > 20.0 + 1e-6) ++worse;
-                if (gap < -1e-6) ++worse;   // can never beat the exact minimum
+                if (gap > 1e-6) ++worse;
             }
             std::cout << "brute-force comparison: " << compared << " points, worst gap "
-                      << worst << " m\n";
-            check(worse == 0, "Snapped road is within 20 m of the true nearest road (200 points)");
+                      << worst << " m, average snap " << snapMs / compared << " ms\n";
+            check(worse == 0, "Linear search finds exactly the nearest road (200 points)");
 
             // A real landmark: Clock Tower area, Dehradun.
             SnapResult tower = snap.snap({30.3243, 78.0412}, 300.0);

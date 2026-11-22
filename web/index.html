@@ -11,7 +11,7 @@
   <header>
     <h1>RouteLens</h1>
     <span class="sub">Multi-route comparison for Dehradun</span>
-    <span id="traffic-badge" class="badge" title="Traffic data source">traffic: …</span>
+    <span id="traffic-badge" class="badge" title="Traffic data used for the routes">Traffic data: …</span>
   </header>
 
   <div id="preview-banner" class="banner preview" role="alert" hidden>PREVIEW MODE: the routes shown are SAMPLES for testing the interface. They are NOT computed from the road network or from live traffic.</div>
@@ -22,6 +22,11 @@
       <section>
         <h2>1. Pick points</h2>
         <p class="hint">Click the map: first click sets Start, second sets End. Drag a marker to move it.</p>
+        <label for="place-search">Or search a major junction</label>
+        <input id="place-search" type="search" autocomplete="off" maxlength="40"
+               placeholder="e.g. Clock Tower" aria-describedby="place-hint">
+        <p id="place-hint" class="hint">Pick a name to set Start, then End.</p>
+        <ul id="place-results" class="place-results" aria-label="Matching places" hidden></ul>
         <div class="row">
           <button id="reset" type="button">Reset points</button>
         </div>

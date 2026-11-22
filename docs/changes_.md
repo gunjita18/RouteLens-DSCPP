@@ -366,9 +366,125 @@ roads, because "avoid congestion" then has a 25% weight; the 60-trip check is a
 script run by hand, not part of `ctest` (it needs the real network and a
 running server).
 
+## Phase III: simplified design (2026-11-22)
+
+Source: "RouteLens Phase III: Simplified Design with More C and DSA" (team
+plan, 2 Nov 2026), sections 3, 8 and 10. The sections above describe Phase II;
+where they mention the KD-tree, the rate limiter, the route cache or "routing
+engine not connected", this section replaces them.
+
+| Plan item (my part) | Status | Files |
+|---|---|---|
+| Linear nearest-road search instead of the KD-tree | **Done** | `src/spatial/road_snapper.*`, `tests/test_road_snapper.cpp` |
+| Remove LRU cache and rate limiter | **Done**: route cache, rate limiter and `lru_cache.hpp` removed (the TomTom client that also used it was retired by Sneha's PR #19) | removed `src/server/route_cache.hpp`, `src/traffic/rate_limiter.hpp`, `src/traffic/lru_cache.hpp` and their tests |
+| Website: "Traffic data: <time>" | **Done**: shows the snapshot time when routing uses a snapshot, otherwise "estimated (free-flow speeds)" | `src/server/traffic_data.hpp`, `tests/test_traffic_data.cpp`, `web/app.js` |
+| traffic.csv in the Docker image | **Not done, on purpose**: Sneha's PR #19 mounts the snapshot folder instead of copying it into the image (TomTom's terms on storing data); I kept her decision | `Dockerfile` (hers), `data/traffic/README.md` |
+| CI: new C tests, Valgrind | **Done**: one-line `routelens_c_test()` in CMake; CI also runs every C test under Valgrind | `CMakeLists.txt`, `.github/workflows/ci.yml` |
+| Optional: trie autocomplete | **Done**: C trie, `/api/places?prefix=`, search box | `src/core/trie.*`, `tests/test_trie.c`, `src/server/place_index.hpp`, `web/*` |
+| Usability test (phone, colour-blind) | **Automated pre-checks done** (390 px layout, colour-blind simulation); **test with classmates not run yet** | `docs/usability_test.md` |
+| Wire the C core and OOP layer into the server | **Done in `main` by Sneha**: the snapshot and scenarios (PR #19) and the C routing core (PR #23, #25) are connected to the server; my server changes are built on top of them. `RoadNetwork` does not exist | `src/server/main.cpp` |
+
+### Linear nearest-road search
+
+`RoadSnapper` keeps its interface, so the rest of the server is unchanged. The
+constructor turns every road shape into straight segments in local metres
+(once). `snap()` loops over all segments, computes the distance from the click
+to each one (projection onto the segment, clamped to its ends) and keeps the
+smallest; the routing node is the end of that road nearer the click.
+
+Why segments and not only nodes (the plan's one-line summary says "a loop over
+all nodes"): a click in the middle of a long straight road is far from both of
+its end nodes, so a node-only search can pick a side street instead. Measuring
+to the segment is the same kind of loop and gives the exact nearest road. It is
+still a plain linear search, O(S) per click.
+
+Measured on the real network (31,802 nodes, 72,626 edges, 342,198 segments):
+1.2 ms per click on average over 200 random points, and the result equals an
+independent brute-force check on all 200 (largest difference 1e-13 m). The
+Phase II KD-tree was within 20 m of exact; the linear search is exact.
+
+### Route cache and rate limiter removed
+
+Without the cache every request computes its routes: `/api/routes` Clock Tower
+to ISBT took 0.33 to 0.34 s (3 runs), `/api/scenario` with one closure 0.35 s
+(it also computes the no-closure baseline). The website no longer handles HTTP
+429; 30 quick requests in a row all answer 200.
+
+### "Traffic data: <time>"
+
+`/api/health`, `/api/routes` and `/api/scenario` return
+`traffic_data: {source, fetched_at}`, built from Sneha's traffic provider
+(`fetchedAt()`, roads with data). `source` is "snapshot" only when a snapshot
+with data is loaded and the request used it; Rain and Rush hour answers say
+"estimated", because those scenarios start from free-flow speeds (the traffic
+module's rule, `scenarioNeedsLiveTraffic()`). The website badge shows
+"Traffic data: 10 Nov, 9:30 AM" or "Traffic data: estimated (free-flow
+speeds)" and updates with every answer. `/api/traffic/status` (Sneha's) still
+reports the loaded snapshot.
+
+### Trie autocomplete
+
+- `src/core/trie.c`: 128 children per node (ASCII), letters lower-cased on
+  insert and search, value -1 means no name ends here. Insert and find are
+  O(length); prefix search walks to the prefix node, then a depth-first walk in
+  alphabetical order collects up to `max` values.
+- `PlaceIndex` (C++) owns the C trie and frees it in its destructor (RAII).
+  Filled once at startup with the 41 junctions that have coordinates. The plan
+  also mentions 20 landmarks, but there is no landmark list in the repository,
+  so none were added.
+- `GET /api/places?prefix=Cl[&limit=8]`: prefix 1 to 40 printable ASCII
+  characters, limit 1 to 20; anything else gets 400.
+- Website: search box in section 1; picking a name sets Start, then End, like
+  a map click.
+
+### Verification (2026-11-22, WSL Ubuntu, Release build)
+
+- `ctest`: 20 of 20 pass, plus `test_trie_valgrind` (no leaks, no errors)
+  (on 6c4acad, before rebuilding on PR #18/#19; see below for the final run).
+- Server on the real network: health, traffic status, places (5 bad inputs,
+  all 400), routes and scenario checked with curl.
+- Website in headless Edge with a temporary self-test script (not committed):
+  badge text; "cl" lists Clock Tower; picking it sets Start; "zzz" shows "No
+  major junction starts with that."; a second pick sets End; Find gives 3
+  route cards.
+- Docker (on 6c4acad): the image built and the container answered
+  `/api/health` and `/api/places`. Without the road CSVs mounted it lists 0
+  places, because the junctions are snapped onto the road network. The
+  Dockerfile is now Sneha's PR #19 version; CI builds it.
+
+### Rebuilt on the latest `main` (22 Nov, night)
+
+Sneha's PRs #18 to #25 (C data structures and OOP classes, routing with the
+saved snapshot, TomTom client removed, ETA study tools, C routing core in the
+server, new README) were merged into `main` while my work was still local. My
+commits were rebuilt on top of them:
+
+- Her snapshot wiring (PR #19) is kept. I had connected the snapshot the same
+  evening in my own way; that version was dropped so there is one
+  implementation, hers.
+- The traffic label reads her provider instead of the file.
+- All C tests, including her data-structure and routing tests, run through
+  `routelens_c_test()` and also under Valgrind in CI.
+- `lru_cache.hpp` could now be removed completely.
+
+Final run (22 Nov, WSL Ubuntu, Release, Valgrind on): `ctest` 49 of 49 pass
+(14 of them are the C tests under Valgrind); server on the real network: 41
+places, Clock Tower to ISBT 3 routes in about 0.016 s, Rain answered, what-if
+closure answered; without a snapshot file every label says "estimated".
+
+### Still open in my part
+
+- Run the usability test with classmates (`docs/usability_test.md`; the
+  automated pre-checks are done).
+- A real `traffic.csv` (Sneha runs `fetch_traffic.py`); until then the label
+  says "estimated". `RoadNetwork` is not written (not clearly assigned).
+- The website still loads Leaflet, Chart.js and the map tiles from the
+  internet, so a fully offline demo also needs those served locally.
+
 ## Files deliberately not touched (other members)
-`src/core/*`, `src/data/*`, `src/algorithms/min_heap.hpp`,
+`src/data/*`, `src/core/graph.*`, `src/algorithms/min_heap.hpp`,
 `src/app/osm_info_main.cpp`, `preprocess/export_osm.py`, `tests/test_osm.cpp`,
 `tests/test_min_heap.cpp`, `Makefile`, `docs/OSM_DATA.md`, `docs/reports/*`,
 `README.md`, `external/Crow` (third-party submodule).
-`src/core/dd.c` is an empty stray file; I left it for its owner to delete.
+`src/core/trie.*` is mine (Phase III). `src/core/dd.c` (empty stray file) was
+deleted in Phase III, as the team plan (section 9) says.

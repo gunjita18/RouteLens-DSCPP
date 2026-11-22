@@ -49,6 +49,13 @@ label { display: block; margin: 6px 0; font-size: 14px; }
 label output { float: right; color: var(--muted); }
 input[type=range] { width: 100%; margin: 0; }
 
+/* Place search (trie autocomplete). 44 px rows are easy to tap on a phone. */
+input[type=search] { width: 100%; min-height: 44px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.place-results { list-style: none; margin: 4px 0; padding: 0; border: 1px solid var(--line); border-radius: 6px; }
+.place-results li + li { border-top: 1px solid var(--line); }
+.place-results button { width: 100%; border: 0; border-radius: 0; text-align: left; }
+.place-results .none { padding: 8px 10px; color: var(--muted); font-size: 13px; }
+
 .card { margin: 8px 0; padding: 10px; border: 1px solid var(--line); border-left-width: 8px; border-radius: 6px; }
 .card.r1 { border-left-color: var(--r1); border-left-style: solid; }
 .card.r2 { border-left-color: var(--r2); border-left-style: dashed; }

@@ -16,33 +16,40 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
-add_executable(test_kdtree
-    tests/test_kdtree.cpp
-    src/spatial/kdtree.cpp
-)
-target_include_directories(test_kdtree PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/spatial
-)
-target_compile_options(test_kdtree PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME KDTreeTests COMMAND test_kdtree)
+# ---------------------------------------------------------------- hand-written C core (Aayush, Phase III)
+# Add each C test with one line:  routelens_c_test(test_name tests/test_name.c)
+# It builds the test against routelens_core, registers it with CTest (label
+# "c_core") and runs it from the repo root (so tests can find data/osm/*.csv).
+# With -DROUTELENS_VALGRIND=ON a second test runs it under Valgrind and fails
+# on any memory leak or invalid memory access (CI does this).
+option(ROUTELENS_VALGRIND "Also run every C test under Valgrind" OFF)
+if(ROUTELENS_VALGRIND)
+    find_program(VALGRIND_EXECUTABLE valgrind REQUIRED)
+endif()
 
-add_executable(test_lru_cache
-    tests/test_lru_cache.cpp
+add_library(routelens_core STATIC
+    src/core/trie.c
 )
-target_include_directories(test_lru_cache PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/traffic
-)
-target_compile_options(test_lru_cache PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME LRUCacheTests COMMAND test_lru_cache)
+target_include_directories(routelens_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+target_compile_options(routelens_core PRIVATE -Wall -Wextra -pedantic)
 
-add_executable(test_rate_limiter
-    tests/test_rate_limiter.cpp
-)
-target_include_directories(test_rate_limiter PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/traffic
-)
-target_compile_options(test_rate_limiter PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME RateLimiterTests COMMAND test_rate_limiter)
+function(routelens_c_test name)
+    add_executable(${name} ${ARGN})
+    target_link_libraries(${name} PRIVATE routelens_core)
+    target_compile_options(${name} PRIVATE -Wall -Wextra -pedantic)
+    add_test(NAME ${name} COMMAND ${name} WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(${name} PROPERTIES LABELS c_core)
+    if(ROUTELENS_VALGRIND)
+        add_test(NAME ${name}_valgrind
+                 COMMAND ${VALGRIND_EXECUTABLE} --leak-check=full --show-leak-kinds=all
+                         --errors-for-leak-kinds=all --error-exitcode=1 $<TARGET_FILE:${name}>
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(${name}_valgrind PROPERTIES LABELS "c_core;valgrind")
+    endif()
+endfunction()
+
+# Trie for place-name autocomplete (/api/places, search box on the website)
+routelens_c_test(test_trie tests/test_trie.c)
 
 add_executable(test_request_params
     tests/test_request_params.cpp
@@ -55,16 +62,15 @@ add_test(NAME RequestParamsTests COMMAND test_request_params)
 
 find_package(Threads REQUIRED)
 
-# Route-result cache (LRU + 5-minute expiry), including a multi-threaded check.
-add_executable(test_route_cache
-    tests/test_route_cache.cpp
+# "Traffic data: <time>" label rule.
+add_executable(test_traffic_data
+    tests/test_traffic_data.cpp
 )
-target_include_directories(test_route_cache PRIVATE
+target_include_directories(test_traffic_data PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/server
 )
-target_link_libraries(test_route_cache PRIVATE Threads::Threads)
-target_compile_options(test_route_cache PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME RouteCacheTests COMMAND test_route_cache)
+target_compile_options(test_traffic_data PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME TrafficDataLabelTests COMMAND test_traffic_data)
 
 # Interface-preview provider (sample routes, clearly labelled).
 add_executable(test_preview_provider
@@ -76,12 +82,11 @@ target_include_directories(test_preview_provider PRIVATE
 target_compile_options(test_preview_provider PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME PreviewProviderTests COMMAND test_preview_provider)
 
-# Road network: the map-data module's graph and OSM loader, plus the KD-tree
-# road snapper that connects clicked points to it.
+# Road network: the map-data module's graph and OSM loader, plus the
+# linear-search road snapper that connects clicked points to it.
 add_library(routelens_osm STATIC
     src/data/osm_loader.cpp
     src/data/geo.cpp
-    src/spatial/kdtree.cpp
     src/spatial/road_snapper.cpp
     src/algorithms/dijkstra.cpp
     src/algorithms/astar.cpp
@@ -110,7 +115,7 @@ add_executable(routelens_server
     src/server/main.cpp
     src/server/osm_route_provider.cpp
 )
-target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic)
+target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic routelens_core)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
 
 
@@ -241,13 +246,11 @@ add_library(routelens_ds STATIC
 target_include_directories(routelens_ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
 
+# routelens_c_test (top of this file) runs each from the repo root, so
+# test_hashtable can find data/osm/nodes.csv, and adds a Valgrind run in CI.
 foreach(ds_test dynarray list hashtable queue bfs traffic_reader search dsu minheap stack sort c_dijkstra c_penalty)
-    add_executable(test_${ds_test} tests/test_${ds_test}.c)
+    routelens_c_test(test_${ds_test} tests/test_${ds_test}.c)
     target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
-    target_compile_options(test_${ds_test} PRIVATE -Wall -Wextra -pedantic)
-    # WORKING_DIRECTORY = repo root so test_hashtable can find data/osm/nodes.csv
-    add_test(NAME ${ds_test}_test COMMAND test_${ds_test}
-             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
 # ---------------------------------------------------------------- traffic snapshot script

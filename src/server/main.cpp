@@ -12,18 +12,18 @@
 #include <string>
 
 #include "crow.h"
+#include "place_index.hpp"
 #include "preview_provider.hpp"
 #include "request_params.hpp"
-#include "route_cache.hpp"
 #include "route_provider.hpp"
 #include "osm_route_provider.hpp"
+#include "traffic_data.hpp"
 #include "../algorithms/scenario.hpp"
 #include "../data/osm_loader.hpp"
+#include "../oop/scenario.hpp"
 #include "../oop/traffic_provider.hpp"
 #include "../spatial/road_snapper.hpp"
 #include "../traffic/junctions.hpp"
-#include "../traffic/lru_cache.hpp"
-#include "../traffic/rate_limiter.hpp"
 
 namespace {
 
@@ -166,6 +166,35 @@ void putSnapped(crow::json::wvalue& body, const rl::SnapResult& from, const rl::
     put("to", to);
 }
 
+// "Traffic data: <time>" on the website. source is "snapshot" only when the
+// routes were computed with the snapshot; otherwise "estimated" (free-flow).
+void putTrafficData(crow::json::wvalue& body, const rl::TrafficDataInfo& info) {
+    body["traffic_data"]["source"] = info.source();
+    if (info.usedByRouting && info.snapshotFound && !info.fetchedAt.empty()) {
+        body["traffic_data"]["fetched_at"] = info.fetchedAt;
+    } else {
+        body["traffic_data"]["fetched_at"] = nullptr;
+    }
+}
+
+// The label for one request: Rain and Rush hour start from free-flow speeds and
+// ignore the snapshot (the traffic module's rule), so their answers say
+// "estimated" even when a snapshot is loaded.
+rl::TrafficDataInfo trafficDataFor(const rl::TrafficDataInfo& loaded, const std::string& scenario) {
+    rl::TrafficDataInfo info = loaded;
+    rl::ScenarioKind kind = rl::ScenarioKind::Normal;
+    rl::parseScenario(scenario, kind);
+    if (!rl::scenarioNeedsLiveTraffic(kind)) {
+        info.usedByRouting = false;
+    }
+    return info;
+}
+
+// Place-name search limits for /api/places.
+constexpr std::size_t kMaxPrefixLength = 40;
+constexpr int kDefaultPlaceResults = 8;
+constexpr int kMaxPlaceResults = 20;
+
 constexpr std::size_t kMaxClosures = 20;
 constexpr double kMinClosureRadiusM = 20.0;
 constexpr double kMaxClosureRadiusM = 2000.0;
@@ -256,17 +285,13 @@ bool parseClosures(const crow::json::rvalue& body, std::vector<rl::Closure>& out
 int main() {
     crow::SimpleApp app;
 
-    // Protects /api/routes from request floods: more than 10 requests in one
-    // second get HTTP 429.
-    constexpr int kRouteRequestsPerWindow = 10;
-    constexpr int kRouteWindowSeconds = 1;
-    rl::RateLimiter routeLimiter(kRouteRequestsPerWindow, std::chrono::seconds(kRouteWindowSeconds));
-    std::atomic<int> rejectedRequests{0};
-    // Route results are cached for 5 minutes, so repeating a query does not
-    // recompute routes. (Traffic is a fixed snapshot, so cached routes stay valid.)
-    rl::RouteCache routeCache(256, 300.0);
+    // Phase III: the route-result cache (LRU) and the request rate limiter were
+    // removed from the server (outside the syllabus; with a saved traffic
+    // snapshot there is no TomTom quota to protect). Both remain in Git history.
 
-    // The routing engine plugs in here. Until it exists the server answers 501.
+    // Route provider. It starts as NullRouteProvider (answers 501) and is
+    // replaced by the real OSM routing provider once the road network has
+    // loaded (below), so 501 now only means the network could not be loaded.
     // ROUTELENS_PREVIEW=1 switches on SAMPLE routes for showing the interface; they
     // are not computed from the road network and are labelled as such everywhere.
     std::unique_ptr<rl::RouteProvider> provider = std::make_unique<rl::NullRouteProvider>();
@@ -276,9 +301,9 @@ int main() {
         CROW_LOG_WARNING << "PREVIEW MODE: /api/routes returns SAMPLE routes, not real ones";
     }
 
-    // Road network (owned by the map-data module) and the KD-tree that snaps
-    // clicks onto it. Without the CSVs the server still runs; /api/routes then
-    // answers 503.
+    // Road network (owned by the map-data module) and the linear-search road
+    // snapper that puts clicks onto it. Without the CSVs the server still runs;
+    // /api/routes then answers 503.
     rl::OsmNetwork network;
     std::unique_ptr<rl::RoadSnapper> snapper;
     {
@@ -288,7 +313,7 @@ int main() {
             snapper = std::make_unique<rl::RoadSnapper>(network);
             CROW_LOG_INFO << "road network loaded from " << dir << ": " << network.stats.keptNodes
                           << " nodes, " << network.stats.keptEdges << " edges, "
-                          << snapper->pointCount() << " KD-tree points";
+                          << snapper->segmentCount() << " road segments for snapping";
         } else {
             CROW_LOG_WARNING << "road network NOT loaded from " << dir << ": " << loadErr;
         }
@@ -313,6 +338,15 @@ int main() {
             CROW_LOG_WARNING << "major junctions NOT loaded from " << file << ": " << jErr;
         }
     }
+
+    // Place-name search box: the junction names go into the C trie once.
+    rl::PlaceIndex places;
+    for (const rl::Junction& j : junctions.junctions) {
+        if (!places.add(j.name, j.pos)) {
+            CROW_LOG_WARNING << "place name not added to the search box: " << j.name;
+        }
+    }
+    CROW_LOG_INFO << "place search: " << places.size() << " names";
 
     // Measured traffic: the saved snapshot (preprocess/fetch_traffic.py), read once
     // at startup. The server never calls TomTom, so it works offline. A missing or
@@ -342,6 +376,12 @@ int main() {
                       << (provider->available() ? "ready" : "unavailable");
     }
 
+    // What the website's "Traffic data" label says (per request, see trafficDataFor).
+    rl::TrafficDataInfo trafficData;
+    trafficData.snapshotFound = trafficIsSnapshot;
+    trafficData.fetchedAt = traffic->fetchedAt();
+    trafficData.usedByRouting = trafficIsSnapshot && provider->available() && !provider->isPreview();
+
     CROW_ROUTE(app, "/api/health")
     ([&] {
         crow::json::wvalue response;
@@ -359,6 +399,8 @@ int main() {
             response["junctions"]["snapped"] = static_cast<int>(junctions.junctions.size()) - junctions.unsnapped;
             response["junctions"]["pending"] = junctions.skippedNoCoords;
         }
+        response["places"] = static_cast<int>(places.size());
+        putTrafficData(response, trafficData);
         return response;
     });
 
@@ -373,27 +415,52 @@ int main() {
         response["fetched_at"] = traffic->fetchedAt();
         response["edges_with_data"] = traffic->edgesWithData();
         response["warning"] = trafficWarning;
-        // Limit on incoming /api/routes requests.
-        response["rate_limit"]["max_requests"] = kRouteRequestsPerWindow;
-        response["rate_limit"]["window_seconds"] = kRouteWindowSeconds;
-        response["rate_limit"]["current_count"] = routeLimiter.current_count();
-        response["rate_limit"]["rejected_total"] = rejectedRequests.load();
-        response["route_cache"]["size"] = routeCache.size();
-        response["route_cache"]["capacity"] = routeCache.capacity();
-        response["route_cache"]["hits"] = routeCache.hits();
-        response["route_cache"]["misses"] = routeCache.misses();
-        response["route_cache"]["ttl_seconds"] = routeCache.ttlSeconds();
         return response;
+    });
+
+    // Place-name autocomplete for the search box (C trie).
+    //   GET /api/places?prefix=Cl[&limit=8]
+    //   prefix  1..40 printable ASCII characters, any letter case
+    //   limit   1..20, default 8
+    // Answers {"places": [{"name", "lat", "lon"}, ...]} in alphabetical order.
+    CROW_ROUTE(app, "/api/places")
+    ([&](const crow::request& req) {
+        const char* prefixParam = req.url_params.get("prefix");
+        if (prefixParam == nullptr || prefixParam[0] == '\0') {
+            return jsonError(400, "prefix is required");
+        }
+        const std::string prefix(prefixParam);
+        if (prefix.size() > kMaxPrefixLength) {
+            return jsonError(400, "prefix must be at most 40 characters");
+        }
+        for (unsigned char c : prefix) {
+            if (c < 0x20 || c > 0x7e) {
+                return jsonError(400, "prefix must be plain text (ASCII letters, digits, spaces)");
+            }
+        }
+        int limit = kDefaultPlaceResults;
+        if (const char* l = req.url_params.get("limit")) {
+            char* end = nullptr;
+            const long v = std::strtol(l, &end, 10);
+            if (end == l || *end != '\0' || v < 1 || v > kMaxPlaceResults) {
+                return jsonError(400, "limit must be a whole number from 1 to 20");
+            }
+            limit = static_cast<int>(v);
+        }
+        crow::json::wvalue out;
+        out["places"] = crow::json::wvalue::list();
+        std::size_t i = 0;
+        for (const rl::Place& p : places.search(prefix, limit)) {
+            out["places"][i]["name"] = p.name;
+            out["places"][i]["lat"] = p.pos.lat;
+            out["places"][i]["lon"] = p.pos.lon;
+            ++i;
+        }
+        return jsonResponse(200, out);
     });
 
     CROW_ROUTE(app, "/api/routes")
     ([&](const crow::request& req) {
-        if (!routeLimiter.allow_request()) {
-            ++rejectedRequests;
-            crow::response tooMany = jsonError(429, "too many requests, try again in a moment");
-            tooMany.set_header("Retry-After", "1");
-            return tooMany;
-        }
         rl::ParamGetter get = [&](const std::string& key) -> std::optional<std::string> {
             const char* v = req.url_params.get(key);
             if (!v) {
@@ -431,23 +498,14 @@ int main() {
             return jsonResponse(501, body);
         }
 
-        // Same query within 5 minutes: answer from the cache, no recomputation.
-        const std::string cacheKey = rl::RouteCache::makeKey(*parsed);
-        std::optional<std::vector<rl::RouteInfo>> routes = routeCache.get(cacheKey);
-        const bool fromCache = routes.has_value();
-        if (!routes) {
-            routes = provider->compute(*parsed);
-            if (!routes->empty()) {
-                routeCache.put(cacheKey, *routes);
-            }
-        }
+        const std::vector<rl::RouteInfo> routes = provider->compute(*parsed);
 
         crow::json::wvalue out;
         out["scenario"] = parsed->scenario;
         out["preview"] = provider->isPreview();   // true = sample routes, not real
-        out["from_cache"] = fromCache;
+        putTrafficData(out, trafficDataFor(trafficData, parsed->scenario));
         putSnapped(out, from, to);
-        putRoutes(out, *routes);
+        putRoutes(out, routes);
         return jsonResponse(200, out);
     });
 
@@ -465,12 +523,6 @@ int main() {
     //     slow_factor 1.1..20, default 3 (travel-time multiplier, slow mode only)
     CROW_ROUTE(app, "/api/scenario").methods(crow::HTTPMethod::Post)
     ([&](const crow::request& req) {
-        if (!routeLimiter.allow_request()) {
-            ++rejectedRequests;
-            crow::response tooMany = jsonError(429, "too many requests, try again in a moment");
-            tooMany.set_header("Retry-After", "1");
-            return tooMany;
-        }
         auto body = crow::json::load(req.body);
         if (!body || body.t() != crow::json::type::Object) {
             return jsonError(400, "request body must be a JSON object");
@@ -536,6 +588,7 @@ int main() {
         crow::json::wvalue out;
         out["scenario"] = "custom";
         out["traffic_scenario"] = parsed->scenario;   // rain etc., combined with the closures
+        putTrafficData(out, trafficDataFor(trafficData, parsed->scenario));
         putSnapped(out, from, to);   // docs/scenario_api.md promises it; the website draws it
         out["affected"]["blocked_edges"] = effect.blockedEdges;
         out["affected"]["slowed_edges"] = effect.slowedEdges;
@@ -555,15 +608,8 @@ int main() {
         out["reachable"]["hops_with_closures"] = after.hops;
         out["routes"] = crow::json::wvalue::list();
 
-        // The route without closures is the same query /api/routes answers, so
-        // share its cache: changing only the closures then skips the slow part.
-        const std::string baselineKey = rl::RouteCache::makeKey(*parsed);
-        std::optional<std::vector<rl::RouteInfo>> cachedBaseline = routeCache.get(baselineKey);
-        std::vector<rl::RouteInfo> baseline =
-            cachedBaseline ? *cachedBaseline : provider->compute(*parsed);
-        if (!cachedBaseline && !baseline.empty()) {
-            routeCache.put(baselineKey, baseline);
-        }
+        // The route without closures (the same query /api/routes answers).
+        const std::vector<rl::RouteInfo> baseline = provider->compute(*parsed);
         if (!baseline.empty()) {
             out["baseline"]["eta_s"] = baseline.front().etaSeconds;
             out["baseline"]["distance_km"] = baseline.front().distanceKm;

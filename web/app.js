@@ -44,10 +44,16 @@
   // ---- point selection -------------------------------------------------
   map.on('click', function (e) {
     if (placing) { addClosure(e.latlng); return; }
-    if (points.length >= 2) { return; }
-    points.push({ lat: e.latlng.lat, lon: e.latlng.lng });
+    addPoint(e.latlng);
+  });
+
+  // Sets Start (first call) or End (second call); used by map clicks and the
+  // place search box. Returns false if both points are already set.
+  function addPoint(latlng) {
+    if (points.length >= 2) { return false; }
+    points.push({ lat: latlng.lat, lon: latlng.lng });
     var idx = points.length - 1;
-    var marker = L.marker(e.latlng, { draggable: true, title: 'Drag to move' })
+    var marker = L.marker(latlng, { draggable: true, title: 'Drag to move' })
       .bindTooltip(idx === 0 ? 'Start' : 'End', { permanent: true }).addTo(map);
     // Dragging a marker moves that point and, once both are set, recomputes the routes.
     marker.on('dragend', function () {
@@ -58,7 +64,59 @@
     });
     markers.push(marker);
     updatePointsInfo();
+    return true;
+  }
+
+  // ---- place search (trie autocomplete on the server) -------------------
+  var searchTimer = null;
+  var searchSeq = 0;   // only the newest answer may fill the list
+
+  $('place-search').addEventListener('input', function () {
+    clearTimeout(searchTimer);
+    var prefix = $('place-search').value.trim();
+    if (!prefix) { showPlaces(null); return; }
+    // Wait until typing pauses for 150 ms, so not every key sends a request.
+    searchTimer = setTimeout(function () { searchPlaces(prefix); }, 150);
   });
+
+  function searchPlaces(prefix) {
+    var mySeq = ++searchSeq;
+    fetch('/api/places?' + new URLSearchParams({ prefix: prefix, limit: 8 }).toString())
+      .then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
+      .then(function (res) {
+        if (mySeq !== searchSeq) { return; }
+        showPlaces(res.status === 200 ? res.body.places : [], res.body.error);
+      })
+      .catch(function () { if (mySeq === searchSeq) { showPlaces([], 'Cannot reach the RouteLens server.'); } });
+  }
+
+  // places: null hides the list; [] shows "no match" (or the error text).
+  function showPlaces(places, error) {
+    var list = $('place-results');
+    list.textContent = '';
+    if (places === null) { list.hidden = true; return; }
+    if (!places.length) {
+      list.appendChild(el('li', 'none', error || 'No major junction starts with that.'));
+    }
+    places.forEach(function (p) {
+      var li = el('li');
+      var b = el('button', null, p.name);
+      b.type = 'button';
+      b.addEventListener('click', function () {
+        var ll = L.latLng(p.lat, p.lon);
+        if (!addPoint(ll)) {
+          showBanner('Start and End are both set. Press "Reset points" to pick again.');
+          return;
+        }
+        map.panTo(ll);
+        $('place-search').value = '';
+        showPlaces(null);
+      });
+      li.appendChild(b);
+      list.appendChild(li);
+    });
+    list.hidden = false;
+  }
 
   $('reset').addEventListener('click', function () {
     points = [];
@@ -221,6 +279,7 @@
       render(body.routes || [], note);
       drawSnapped(body.snapped);
       setPreview(body.preview === true);
+      showTrafficData(body.traffic_data);
     });
   }
 
@@ -251,6 +310,7 @@
         res.message ? 'No route avoids these closures.' : undefined);   // the reason is in the impact box
       drawSnapped(res.snapped);
       showImpact(res);
+      showTrafficData(res.traffic_data);
     });
   }
 
@@ -268,13 +328,10 @@
         if (mySeq !== requestSeq) { return; }   // a newer request is already running
         if (res.status === 200) {
           onOk(res.body);
-        } else if (res.status === 429) {
-          clearRoutes();
-          showBanner('Too many requests. Wait a second and try again.');
         } else if (res.status === 501) {
           clearRoutes();
           drawSnapped(res.body.snapped);
-          showBanner('Routing engine not connected yet. No routes can be computed.');
+          showBanner('The server has no routing engine loaded. No routes can be computed.');
         } else {
           clearRoutes();
           showBanner('Request rejected: ' + (res.body.error || res.status));
@@ -459,25 +516,38 @@
     });
   }
 
-  // ---- traffic status badge --------------------------------------------
-  function refreshTraffic() {
-    fetch('/api/traffic/status')
-      .then(function (r) { return r.json(); })
-      .then(function (s) {
-        // The server never calls TomTom: it reads a snapshot saved earlier, so the
-        // page shows when that data was taken instead of calling it "live".
-        $('traffic-badge').textContent = s.source === 'snapshot'
-          ? 'Traffic data: ' + (s.fetched_at || 'time unknown') + ' (saved snapshot)'
-          : 'Traffic: estimated (free-flow speeds)';
-      })
-      .catch(function () { $('traffic-badge').textContent = 'server offline'; });
-  }
-  refreshTraffic();
-  setInterval(refreshTraffic, 30000);
+  // ---- "Traffic data: <time>" badge -------------------------------------
+  // The server sends traffic_data = { source, fetched_at }. "snapshot" means
+  // the routes use the TomTom snapshot fetched at that time; "estimated"
+  // means free-flow speeds (no snapshot used).
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-  // If the server runs in preview mode, warn from the very first screen.
+  // "2026-11-10 09:30" -> "10 Nov, 9:30 AM". Other formats are shown as given.
+  function formatSnapshotTime(text) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(text || '');
+    if (!m || +m[2] < 1 || +m[2] > 12) { return text; }
+    var h = +m[4];
+    var ampm = h < 12 ? 'AM' : 'PM';
+    h = h % 12 === 0 ? 12 : h % 12;
+    return (+m[3]) + ' ' + MONTHS[+m[2] - 1] + ', ' + h + ':' + m[5] + ' ' + ampm;
+  }
+
+  function showTrafficData(td) {
+    if (!td) { return; }
+    if (td.source === 'snapshot') {
+      $('traffic-badge').textContent = 'Traffic data: ' +
+        (td.fetched_at ? formatSnapshotTime(td.fetched_at) : 'snapshot (time unknown)');
+    } else {
+      $('traffic-badge').textContent = 'Traffic data: estimated (free-flow speeds)';
+    }
+  }
+
+  // First screen: preview warning and traffic-data label from /api/health.
   fetch('/api/health')
     .then(function (r) { return r.json(); })
-    .then(function (h) { setPreview(h.preview === true); })
-    .catch(function () { /* the traffic badge already reports an offline server */ });
+    .then(function (h) {
+      setPreview(h.preview === true);
+      showTrafficData(h.traffic_data);
+    })
+    .catch(function () { $('traffic-badge').textContent = 'Server offline'; });
 })();
