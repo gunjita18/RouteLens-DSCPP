@@ -1,9 +1,9 @@
 # C routing core: min-heap, stack, merge sort, Dijkstra, penalty method
 
 Hand-written C, as the simplified Phase III design asks (`src/core/`). Each piece has its own
-test. **The server uses it:** `OsmRouteProvider` generates routes with `penalty_routes` and
-`dijkstra_path` (see "In the server"). The earlier C++ implementations in `src/algorithms/`
-(Dijkstra, penalty method, Yen, A*) are kept with their tests but the server no longer calls them.
+test. **The server uses it** through the C++ router classes (see "C++ layer" and "In the
+server"). The earlier C++ implementations (Dijkstra, penalty method, heap, Yen, A*, Pareto
+ranking) were removed from the build in Phase III and are kept only in Git history.
 
 | File | What | Cost |
 |---|---|---|
@@ -48,26 +48,44 @@ Defaults: `k = 3`, factor 1.4, overlap 0.7, no stretch limit, at most `5k` searc
 - **Dijkstra:** same cost as a Bellman-Ford reference on 400 random graphs (with zero costs,
   parallel edges and blocked edges); every returned route is a valid chain of edges whose costs add
   up to the reported cost; a 200,000-node chain (no recursion anywhere).
-- **Real network** (`test_c_routing_real`, 31,802 nodes and 72,626 edges): the C Dijkstra and the
-  existing C++ `dijkstraWithCosts` find the same cost on **1,000 random pairs with time costs and
-  200 with distance costs**; the penalty method returned three valid, different routes for every one
-  of 100 random pairs, the first equal to the cheapest.
+- **Against NetworkX** (`evaluation/run_evaluation.sh`, report in `docs/evaluation_phase3.md`):
+  on the real network (31,802 nodes, 72,626 edges) the C Dijkstra, called through
+  `DijkstraRouter`, finds the same cost as NetworkX on **1,000 random pairs for each of the time,
+  distance and balanced profiles** (0 mismatches, max relative error 0).
+- **Real network** (`test_c_routing_real`, runs in CI): every C route on 1,000 random pairs with
+  time costs and 200 with distance costs is a valid chain of edges whose costs add up;
+  `DijkstraRouter` and `PenaltyRouter` return exactly the routes of the C calls; the penalty method
+  returned valid, different routes for each of 100 random pairs, the first equal to the cheapest.
+  (Before Phase III this test compared against the C++ Dijkstra, which agreed on all pairs.)
 - **Memory:** all of these tests run clean under Valgrind (`scripts/check_memory.sh`).
 
 `graph.c` moved into the C library target so these plain-C tests can build graphs.
+
+## C++ layer (`src/oop/route.hpp`, `src/oop/route_finder.hpp`)
+
+| Class | What | OOP point |
+|---|---|---|
+| `Route` | Edge indices and cost of one route, copied out of a C `PathResult` | private data, `operator<` (by cost), `operator==`, friend `operator<<` |
+| `RouteFinder` | Abstract base: `virtual std::vector<Route> find(int src, int dst) const = 0` | abstraction; copies and checks costs and closures once |
+| `DijkstraRouter : RouteFinder` | Calls `dijkstra_path`; at most one route | inheritance, `override` |
+| `PenaltyRouter : DijkstraRouter` | Calls `penalty_routes`; first route equals `DijkstraRouter`'s | inheritance of a concrete class; runtime polymorphism through `RouteFinder&` |
+
+C results are freed by small RAII guards, so no C memory leaks if an exception is thrown. A bad
+node gives `std::invalid_argument`; invalid costs or options are refused in the constructor.
 
 ## In the server (`src/server/osm_route_provider.cpp`)
 
 Route generation per request:
 
 1. Edge costs for the user's priorities (including junction waits and measured traffic).
-2. `penalty_routes`: up to 5 routes, factor 1.4, a route dropped if more than 70 % of its edges
-   are shared with an earlier one or if it costs over 1.5 times the cheapest.
-3. `dijkstra_path` on time-only costs: the fastest route, added if the penalty method did not
-   already return it.
+2. `PenaltyRouter` (`penalty_routes`): up to 5 routes, factor 1.4, a route dropped if more than
+   70 % of its edges are shared with an earlier one or if it costs over 1.5 times the cheapest.
+3. `DijkstraRouter` (`dijkstra_path`) on time-only costs: the fastest route, added if the penalty
+   method did not already return it.
 4. As before: routes over 1.5 times the shortest distance and routes sharing 85 % or more of their
-   roads with an accepted route are dropped, at most three are kept, and they are ranked by the
-   weighted score of time, distance, junctions and traffic.
+   roads with an accepted route are dropped, and at most three are kept.
+5. Ranking by the weighted score of time, distance, junctions and traffic with the C
+   **`merge_sort`** on plain (score, position) pairs; stable, so equal scores keep their order.
 
 **What changed in behaviour.** The earlier code used the C++ penalty method (factor 1.5) and, when no
 closure was active, topped the candidates up with Yen's k-shortest paths. Yen's algorithm is outside
@@ -88,13 +106,12 @@ ETA counts each junction once per route, so the route with the lowest ETA is not
 the lowest search cost; Yen's extra candidates sometimes found it. Asking for 8 penalty routes instead of
 5 did not change this.
 
-## Not done
+## Limits
 
-- A re-check against NetworkX (the plan's version) was not run; the check above is against the C++
-  implementation on the same costs.
-- Timing in the real-network test shows the C version faster in total on this machine (about
-  3.5 s against 8.1 s for 1,000 pairs, one run); this is not a controlled benchmark and the C
-  version stops at the destination while the comparison runs share no other setting.
+- The NetworkX check needs Python with networkx and is run by hand (`evaluation/run_evaluation.sh`),
+  not in CI.
+- Run times in `docs/evaluation_phase3.md` (about 1.3-1.5 ms per search) are from one machine and
+  one run; they are not a controlled benchmark.
 
 ## Viva questions
 
@@ -114,3 +131,19 @@ a stack, then pop them: the stack reverses the order.
 search again, dropping routes that share more than 70 % of their edges with an earlier one.
 
 **Why merge sort?** Always O(n log n) and stable (equal scores keep their order).
+
+**Why sort (score, position) pairs and not the routes?** `merge_sort` is C: it copies elements byte
+by byte with `memcpy`. A C++ object holding a `std::string` or `std::vector` must not be copied that
+way, so the plain pairs are sorted and the routes are then taken in that order.
+
+**Where is inheritance in routing?** `PenaltyRouter : DijkstraRouter : RouteFinder`. The penalty
+router reuses the graph, costs and closures stored by its parents, and its first route is the
+Dijkstra router's route.
+
+**Where is polymorphism?** The server passes either router to one helper taking a `RouteFinder&`
+and calls `find()`; the virtual call runs the right search. `Route` overloads `operator<` and
+`operator<<` (compile-time polymorphism).
+
+**How do C and C++ work together here?** The C headers have `extern "C"` guards; the router classes
+call `dijkstra_path` and `penalty_routes`, copy the result into `Route` objects and free the C memory
+in a destructor (RAII), even if an exception is thrown.
