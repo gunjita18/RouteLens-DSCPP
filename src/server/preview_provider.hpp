@@ -103,7 +103,7 @@ private:
     }
 
     // Speed factors are the defaults of rl::ScenarioSettings in
-    // src/traffic/scenario.hpp (rain 0.88; rush hour 0.65 on main roads, 0.85
+    // src/oop/scenario.hpp (rain 0.88; rush hour 0.65 on main roads, 0.85
     // elsewhere); travel time grows by 1 / factor. Keep them in step with that file.
     // The incident scenario slows the direct route (index 0) harder than the others.
     static double scenarioFactor(const std::string& scenario, int route, double mainRoadShare) {

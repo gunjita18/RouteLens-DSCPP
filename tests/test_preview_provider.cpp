@@ -1,5 +1,5 @@
 #include "preview_provider.hpp"
-#include "../src/traffic/scenario.hpp"
+#include "../src/oop/scenario.hpp"
 
 #include <algorithm>
 #include <cmath>

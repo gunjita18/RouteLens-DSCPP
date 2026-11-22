@@ -187,7 +187,7 @@ once the server adds a mutex.
 - Free-flow speeds per road class (`osm_loader.cpp`) and the 30 s junction wait are provisional and will be calibrated in the ETA accuracy study.
 - A route passing within 50 m of a junction without going through it can be counted as passing it.
 - 9 junctions reported in Aug 2025 have no verified coordinates yet.
-## 13. Scenarios (`scenario.hpp`)
+## 13. Scenarios (`src/oop/scenario.hpp`)
 
 | Scenario | Starts from | Change | TomTom requests |
 |---|---|---|---|
@@ -266,3 +266,45 @@ Malformed, duplicate and low-confidence rows are skipped and counted (`rows_skip
 - Unit-tested offline with hand-made fixtures; the fetch script has not yet been run against the live TomTom API in this repository.
 - A dry run on the current network finds 2,445 candidate edges, more than the 2,000-request cap, so the run relies on segment reuse. Check the printed request count after the first real run.
 - TomTom has no data for small roads, and one segment can span many kilometres (see the limits above); the snapshot is one moment in time, shown to users as "Traffic data: <fetched_at>".
+
+
+## C++ class hierarchies (`src/oop/`)
+
+Thin C++ classes wrap the C core. The C structures are owned privately and freed in
+destructors (RAII); callers use the abstract interfaces and never see the C types.
+
+| Hierarchy | Base (abstract) | Derived | Chosen by |
+|---|---|---|---|
+| Traffic data | `TrafficProvider` | `FreeFlowProvider`, `SnapshotProvider` | `makeTrafficProvider(net, path)` at startup |
+| Scenarios | `Scenario` | `NormalScenario`, `RainScenario`, `RushHourScenario`, `IncidentScenario` | `makeScenario(kind, settings, incident)` per request |
+| Errors | `std::runtime_error` | `LoadError` | thrown by `SnapshotProvider` |
+
+- **Abstraction:** routing code calls `provider.trafficIndex(edge)` and `scenario->apply(state)` without knowing the concrete class.
+- **Polymorphism:** `apply()` and `trafficIndex()` are virtual; one `std::unique_ptr<Scenario>` behaves as rain, rush hour or incident.
+- **Inheritance:** four scenario classes and two providers reuse their base interface; `LoadError` extends `std::runtime_error`.
+- **Encapsulation:** `SnapshotProvider` keeps the C `TrafficSnapshot` private; scenario constructors reject factors outside (0, 1] (`std::invalid_argument`), so an existing object is always valid.
+
+`ScenarioKind` (the enum the website's names map to) is separate from the `Scenario` class.
+`applyScenario()` remains as a wrapper (`makeScenario(...)->apply(state)`) that returns -1 on invalid settings.
+
+**Using a snapshot:**
+
+```cpp
+std::string warning;
+auto provider = rl::makeTrafficProvider(net, "data/traffic/traffic.csv", &warning);
+// missing file -> FreeFlowProvider and a warning; speeds are then "estimated"
+rl::TrafficState state(net);
+rl::applyProvider(state, *provider);                       // edges with data get measured speeds
+auto scenario = rl::makeScenario(kind, rl::ScenarioSettings{});
+scenario->apply(state);
+// show provider->description(), e.g. "snapshot 2026-11-22 10:08"
+```
+
+`applyProvider` sets travel time to length / measured speed, as the design specifies; a
+measured speed of 0 marks the edge closed and keeps its free-flow time. Snapshot edges are
+marked `DataSource::Historical` because a saved snapshot is not live traffic, so route
+summaries count them under "typical for this time". The user interface should show
+`provider->description()` (the snapshot time) next to that label.
+
+**Not done here:** the server still calls the live TomTom client; switching it to
+`makeTrafficProvider` is the server-wiring task.

@@ -188,7 +188,8 @@ add_library(routelens_traffic STATIC
     src/traffic/tomtom_client.cpp
     src/traffic/eta.cpp
     src/traffic/junctions.cpp
-    src/traffic/scenario.cpp
+    src/oop/scenario.cpp
+    src/oop/traffic_provider.cpp
     src/data/http_client.cpp
     src/data/geo.cpp
 )
@@ -266,3 +267,9 @@ if(Python3_Interpreter_FOUND)
              COMMAND ${Python3_EXECUTABLE} preprocess/test_fetch_traffic.py
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+
+# ---------------------------------------------------------------- traffic providers (class hierarchy)
+add_executable(test_traffic_provider tests/test_traffic_provider.cpp)
+target_link_libraries(test_traffic_provider PRIVATE routelens_traffic)
+target_compile_options(test_traffic_provider PRIVATE -Wall -Wextra -pedantic)
+add_test(NAME TrafficProviderTests COMMAND test_traffic_provider)

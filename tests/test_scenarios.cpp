@@ -4,9 +4,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+#include <vector>
 
 #include "../src/traffic/eta.hpp"
-#include "../src/traffic/scenario.hpp"
+#include "../src/oop/scenario.hpp"
 
 namespace fs = std::filesystem;
 using namespace rl;
@@ -14,6 +18,11 @@ using namespace rl;
 static int failures = 0, checks = 0;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << ": " #c "\n"; } } while (0)
 static bool near(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
+#define CHECK_THROWS(expr) do { checks++; bool thrown_ = false; \
+    try { (void)(expr); } catch (const std::invalid_argument&) { thrown_ = true; } \
+    if (!thrown_) { failures++; std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << ": expected invalid_argument: " #expr "\n"; } } while (0)
+#define CHECK_NOTHROW(expr) do { checks++; try { (void)(expr); } catch (...) { failures++; \
+    std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << ": unexpected throw: " #expr "\n"; } } while (0)
 
 // A(1) -primary- B(2) -primary- C(3) -residential- D(4), all two-way. Signal at D.
 static fs::path writeNetwork() {
@@ -41,15 +50,15 @@ static int edgeOf(const OsmNetwork& net, long long a, long long b) {
 }
 
 static void testParsing() {
-    Scenario s;
-    CHECK(parseScenario("normal", s) && s == Scenario::Normal);
-    CHECK(parseScenario("rush_hour", s) && s == Scenario::RushHour);
-    CHECK(parseScenario("rain", s) && s == Scenario::Rain);
-    CHECK(parseScenario("incident", s) && s == Scenario::Incident);
+    ScenarioKind s;
+    CHECK(parseScenario("normal", s) && s == ScenarioKind::Normal);
+    CHECK(parseScenario("rush_hour", s) && s == ScenarioKind::RushHour);
+    CHECK(parseScenario("rain", s) && s == ScenarioKind::Rain);
+    CHECK(parseScenario("incident", s) && s == ScenarioKind::Incident);
     CHECK(!parseScenario("Rain", s) && !parseScenario("", s) && !parseScenario("snow", s));
-    CHECK(std::string(scenarioName(Scenario::RushHour)) == "rush_hour");
-    CHECK(scenarioNeedsLiveTraffic(Scenario::Normal) && scenarioNeedsLiveTraffic(Scenario::Incident));
-    CHECK(!scenarioNeedsLiveTraffic(Scenario::Rain) && !scenarioNeedsLiveTraffic(Scenario::RushHour));
+    CHECK(std::string(scenarioName(ScenarioKind::RushHour)) == "rush_hour");
+    CHECK(scenarioNeedsLiveTraffic(ScenarioKind::Normal) && scenarioNeedsLiveTraffic(ScenarioKind::Incident));
+    CHECK(!scenarioNeedsLiveTraffic(ScenarioKind::Rain) && !scenarioNeedsLiveTraffic(ScenarioKind::RushHour));
     CHECK(isMainRoad("primary") && isMainRoad("secondary_link") && isMainRoad("trunk"));
     CHECK(!isMainRoad("tertiary") && !isMainRoad("residential") && !isMainRoad(""));
 }
@@ -75,7 +84,7 @@ static void testScenarios(OsmNetwork& net) {
     TrafficState st(net);
 
     // Normal: nothing changes.
-    CHECK(applyScenario(st, Scenario::Normal, set) == 0);
+    CHECK(applyScenario(st, ScenarioKind::Normal, set) == 0);
     CHECK(st.edge(ab).source == DataSource::FreeFlow && near(st.edge(ab).durationS, ffP, 1e-12));
     RouteSummary s0 = summarizeRoute(net, st, route, rules, 30.0);
     CHECK(near(s0.etaS, 2 * ffP + ffR + 30.0, 1e-9));   // old behaviour unchanged (signal at D)
@@ -83,7 +92,7 @@ static void testScenarios(OsmNetwork& net) {
 
     // Live data on the primary road, then Rain: live data is ignored, every road x 0.88.
     CHECK(st.applySegment(liveSegment(), rules, all) == 2);
-    CHECK(applyScenario(st, Scenario::Rain, set) == net.graph->edge_count);
+    CHECK(applyScenario(st, ScenarioKind::Rain, set) == net.graph->edge_count);
     CHECK(st.edge(ab).source == DataSource::Scenario && near(st.edge(ab).ratio, 0.88, 1e-12));
     CHECK(near(st.edge(ab).durationS, ffP / 0.88, 1e-9) && near(st.edge(cd).durationS, ffR / 0.88, 1e-9));
     CHECK(near(net.graph->edges[ab].traffic_index, 0.12, 1e-12));
@@ -94,7 +103,7 @@ static void testScenarios(OsmNetwork& net) {
     CHECK(coverageLabel(r) == "scenario estimate on 100% of the route");
 
     // Rush hour: primary x 0.65, residential x 0.85; level from the length-weighted ratio.
-    CHECK(applyScenario(st, Scenario::RushHour, set) == net.graph->edge_count);
+    CHECK(applyScenario(st, ScenarioKind::RushHour, set) == net.graph->edge_count);
     CHECK(near(st.edge(ab).durationS, ffP / 0.65, 1e-9) && near(st.edge(cd).durationS, ffR / 0.85, 1e-9));
     RouteSummary h = summarizeRoute(net, st, route, rules, 30.0);
     double ratio = (0.65 * 222.4 + 0.85 * 96.0) / 318.4;
@@ -108,7 +117,7 @@ static void testScenarios(OsmNetwork& net) {
     double liveAb = st.edge(ab).durationS;
     Incident slow;
     slow.edges = { ab, -5, 9999 };   // invalid indices are ignored
-    CHECK(applyScenario(st, Scenario::Incident, set, &slow) == 1);
+    CHECK(applyScenario(st, ScenarioKind::Incident, set, &slow) == 1);
     CHECK(st.edge(ab).source == DataSource::Scenario && near(st.edge(ab).ratio, 0.5 * 0.30, 1e-12));
     CHECK(near(st.edge(ab).durationS, liveAb / 0.30, 1e-9) && !st.edge(ab).blocked);
     CHECK(near(net.graph->edges[ab].traffic_index, 0.85, 1e-12));
@@ -122,7 +131,7 @@ static void testScenarios(OsmNetwork& net) {
     Incident block;
     block.edges = { bc };
     block.blocked = true;
-    CHECK(applyScenario(st, Scenario::Incident, set, &block) == 1);
+    CHECK(applyScenario(st, ScenarioKind::Incident, set, &block) == 1);
     CHECK(st.edge(bc).blocked && st.edge(bc).closed && net.graph->edges[bc].traffic_index == 1.0);
     Weights w{ 0.0, 1.0, 0.0, 0.0 };
     std::vector<double> c;
@@ -132,18 +141,99 @@ static void testScenarios(OsmNetwork& net) {
     CHECK(!summarizeRoute(net, st, { ab }, rules, 30.0).anyBlocked);
 
     // Incident without a list changes nothing; reset clears the block.
-    CHECK(applyScenario(st, Scenario::Incident, set) == 0);
+    CHECK(applyScenario(st, ScenarioKind::Incident, set) == 0);
     st.reset();
     CHECK(!st.edge(bc).blocked && st.edge(bc).source == DataSource::FreeFlow);
 
     // Invalid settings: rejected, nothing changed.
     ScenarioSettings bad;
     bad.rainFactor = 0.0;
-    CHECK(applyScenario(st, Scenario::Rain, bad) == -1 && st.edge(ab).source == DataSource::FreeFlow);
+    CHECK(applyScenario(st, ScenarioKind::Rain, bad) == -1 && st.edge(ab).source == DataSource::FreeFlow);
     bad = ScenarioSettings{};
     bad.rushMainFactor = 1.5;
-    CHECK(applyScenario(st, Scenario::RushHour, bad) == -1);
+    CHECK(applyScenario(st, ScenarioKind::RushHour, bad) == -1);
     CHECK(std::string(sourceName(DataSource::Scenario)) == "scenario estimate");
+}
+
+// The class hierarchy: the same behaviour through base-class pointers (runtime
+// polymorphism), constructor validation and the factory.
+static void testHierarchy(OsmNetwork& net) {
+    int ab = edgeOf(net, 1, 2), cd = edgeOf(net, 3, 4);
+    ScenarioSettings set;
+    TrafficState st(net);
+
+    // One container of base pointers; each call dispatches to the derived class.
+    Incident slow;
+    slow.edges = { ab };
+    std::vector<std::unique_ptr<Scenario>> all;
+    all.push_back(std::make_unique<NormalScenario>());
+    all.push_back(std::make_unique<RainScenario>());
+    all.push_back(std::make_unique<RushHourScenario>());
+    all.push_back(std::make_unique<IncidentScenario>(slow));
+    const ScenarioKind kinds[] = { ScenarioKind::Normal, ScenarioKind::Rain, ScenarioKind::RushHour,
+                                   ScenarioKind::Incident };
+    const int edgeCount = net.graph->edge_count;
+    const int expectedChanged[] = { 0, edgeCount, edgeCount, 1 };
+    const bool needsData[] = { true, false, false, true };
+    for (int i = 0; i < 4; i++) {
+        st.reset();
+        CHECK(all[i]->kind() == kinds[i]);
+        CHECK(all[i]->apply(st) == expectedChanged[i]);
+        CHECK(all[i]->needsTrafficData() == needsData[i]);
+        CHECK(all[i]->needsTrafficData() == scenarioNeedsLiveTraffic(kinds[i]));
+        CHECK(std::string(all[i]->name()) == scenarioName(kinds[i]));
+    }
+
+    // Same call, different effect: rain slows every edge by 0.88, rush hour treats
+    // the primary edge and the residential edge differently.
+    st.reset();
+    RainScenario().apply(st);
+    CHECK(near(st.edge(ab).ratio, 0.88, 1e-12) && near(st.edge(cd).ratio, 0.88, 1e-12));
+    RushHourScenario().apply(st);
+    CHECK(near(st.edge(ab).ratio, 0.65, 1e-12) && near(st.edge(cd).ratio, 0.85, 1e-12));
+    RushHourScenario(0.5, 0.7).apply(st);
+    CHECK(near(st.edge(ab).ratio, 0.5, 1e-12) && near(st.edge(cd).ratio, 0.7, 1e-12));
+
+    // The class path and the wrapper function give identical results.
+    st.reset();
+    RainScenario(0.8).apply(st);
+    double viaClass = st.edge(ab).durationS;
+    st.reset();
+    ScenarioSettings s80;
+    s80.rainFactor = 0.8;
+    applyScenario(st, ScenarioKind::Rain, s80);
+    CHECK(near(viaClass, st.edge(ab).durationS, 1e-12));
+
+    // An incident with a blocked road.
+    Incident block;
+    block.edges = { ab, 9999, -1 };   // out-of-range indices are ignored
+    block.blocked = true;
+    st.reset();
+    CHECK(IncidentScenario(block).apply(st) == 1 && st.edge(ab).blocked);
+
+    // Constructors reject invalid factors, so an existing object is always valid.
+    CHECK_THROWS(RainScenario(0.0));
+    CHECK_THROWS(RainScenario(1.01));
+    CHECK_THROWS(RainScenario(-0.5));
+    CHECK_THROWS(RushHourScenario(0.5, 0.0));
+    CHECK_THROWS(RushHourScenario(2.0, 0.5));
+    CHECK_THROWS(IncidentScenario(Incident{}, 0.0));
+    CHECK_NOTHROW(RainScenario(1.0));
+
+    // Factory: right class for each kind; invalid settings throw.
+    for (int i = 0; i < 4; i++) CHECK(makeScenario(kinds[i], set)->kind() == kinds[i]);
+    CHECK(dynamic_cast<RainScenario*>(makeScenario(ScenarioKind::Rain, set).get()) != nullptr);
+    CHECK(dynamic_cast<RushHourScenario*>(makeScenario(ScenarioKind::Rain, set).get()) == nullptr);
+    CHECK(makeScenario(ScenarioKind::Incident, set, &slow)->apply(st) == 1);
+    ScenarioSettings bad;
+    bad.incidentSlowFactor = 1.5;
+    CHECK_THROWS(makeScenario(ScenarioKind::Normal, bad));
+
+    // operator<< prints the scenario name through the base reference.
+    std::ostringstream os;
+    const Scenario& ref = *all[2];
+    os << ref;
+    CHECK(os.str() == "rush_hour");
 }
 
 int main() {
@@ -153,6 +243,7 @@ int main() {
     std::string err;
     if (!loadOsmNetwork(d.string(), net, err)) { std::cerr << "network: " << err << "\n"; return 1; }
     testScenarios(net);
+    testHierarchy(net);
     fs::remove_all(d);
     std::cout << "test_scenarios: " << checks << " checks, " << failures << " failures\n";
     return failures ? 1 : 0;

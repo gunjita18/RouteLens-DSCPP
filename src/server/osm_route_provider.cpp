@@ -4,7 +4,7 @@
 #include "../algorithms/penalty.hpp"
 #include "../algorithms/scenario.hpp"
 #include "../algorithms/yen.hpp"
-#include "../traffic/scenario.hpp"
+#include "../oop/scenario.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -27,10 +27,10 @@ constexpr double kDistinctEtaS = 30.0;
 // Speed factor of a traffic scenario on one edge (docs/TRAFFIC.md section 13):
 // 1 = unchanged. Normal and Incident leave speeds alone here; an incident is a
 // road the user blocks or slows with a closure.
-double scenarioSpeed(Scenario scenario, const ScenarioSettings& settings,
+double scenarioSpeed(ScenarioKind scenario, const ScenarioSettings& settings,
                      const std::string& roadClass) {
-    if (scenario == Scenario::Rain) return settings.rainFactor;
-    if (scenario == Scenario::RushHour) {
+    if (scenario == ScenarioKind::Rain) return settings.rainFactor;
+    if (scenario == ScenarioKind::RushHour) {
         return isMainRoad(roadClass) ? settings.rushMainFactor
                                      : settings.rushOtherFactor;
     }
@@ -184,7 +184,7 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
     // than with TrafficState, which writes into the shared graph while Crow
     // serves requests in parallel. The server has validated the name already;
     // anything else counts as normal.
-    Scenario trafficScenario = Scenario::Normal;
+    ScenarioKind trafficScenario = ScenarioKind::Normal;
     parseScenario(request.scenario, trafficScenario);
     const ScenarioSettings scenarioSettings;
     std::vector<double> speed(graph->edge_count, 1.0);
@@ -384,13 +384,13 @@ std::vector<RouteInfo> OsmRouteProvider::compute(
         route.typicalPct = 0.0;
         route.estimatedPct = 100.0;
         route.trafficLevel = "Estimated";
-        if (trafficScenario == Scenario::Rain ||
-            trafficScenario == Scenario::RushHour) {
+        if (trafficScenario == ScenarioKind::Rain ||
+            trafficScenario == ScenarioKind::RushHour) {
             const TrafficLevel level =
                 levelForRatio(speedWeightedM / totalDistanceM, TrafficRules{});
             route.trafficLevel =
                 std::string(levelName(level)) +
-                (trafficScenario == Scenario::Rain ? " (rain estimate)"
+                (trafficScenario == ScenarioKind::Rain ? " (rain estimate)"
                                                    : " (rush hour estimate)");
         }
 
