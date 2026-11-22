@@ -20,6 +20,13 @@ enable_testing()
 # Add each C test with one line:  routelens_c_test(test_name tests/test_name.c)
 # It builds the test against routelens_core, registers it with CTest (label
 # "c_core") and runs it from the repo root (so tests can find data/osm/*.csv).
+# With -DROUTELENS_VALGRIND=ON a second test runs it under Valgrind and fails
+# on any memory leak or invalid memory access (CI does this).
+option(ROUTELENS_VALGRIND "Also run every C test under Valgrind" OFF)
+if(ROUTELENS_VALGRIND)
+    find_program(VALGRIND_EXECUTABLE valgrind REQUIRED)
+endif()
+
 add_library(routelens_core STATIC
     src/core/trie.c
 )
@@ -32,6 +39,13 @@ function(routelens_c_test name)
     target_compile_options(${name} PRIVATE -Wall -Wextra -pedantic)
     add_test(NAME ${name} COMMAND ${name} WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(${name} PROPERTIES LABELS c_core)
+    if(ROUTELENS_VALGRIND)
+        add_test(NAME ${name}_valgrind
+                 COMMAND ${VALGRIND_EXECUTABLE} --leak-check=full --show-leak-kinds=all
+                         --errors-for-leak-kinds=all --error-exitcode=1 $<TARGET_FILE:${name}>
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(${name}_valgrind PROPERTIES LABELS "c_core;valgrind")
+    endif()
 endfunction()
 
 # Trie for place-name autocomplete (/api/places, search box on the website)
@@ -232,13 +246,11 @@ add_library(routelens_ds STATIC
 target_include_directories(routelens_ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_compile_options(routelens_ds PRIVATE -Wall -Wextra -pedantic)
 
+# routelens_c_test (top of this file) runs each from the repo root, so
+# test_hashtable can find data/osm/nodes.csv, and adds a Valgrind run in CI.
 foreach(ds_test dynarray list hashtable queue bfs traffic_reader search dsu minheap stack sort c_dijkstra c_penalty)
-    add_executable(test_${ds_test} tests/test_${ds_test}.c)
+    routelens_c_test(test_${ds_test} tests/test_${ds_test}.c)
     target_link_libraries(test_${ds_test} PRIVATE routelens_ds)
-    target_compile_options(test_${ds_test} PRIVATE -Wall -Wextra -pedantic)
-    # WORKING_DIRECTORY = repo root so test_hashtable can find data/osm/nodes.csv
-    add_test(NAME ${ds_test}_test COMMAND test_${ds_test}
-             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
 # ---------------------------------------------------------------- traffic snapshot script
