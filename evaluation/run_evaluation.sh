@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Reproduces the Phase II algorithm evaluation (docs/evaluation_phase2.md).
+# Reproduces the Phase III algorithm evaluation of the C routing core
+# (docs/evaluation_phase3.md): the C Dijkstra checked against NetworkX.
 #
 #   evaluation/run_evaluation.sh                 # 1000 pairs, 100 alternative-route pairs
 #   PAIRS=200 ALT_PAIRS=20 evaluation/run_evaluation.sh   # quick smoke run
@@ -36,4 +37,4 @@ cmake --build build-eval --target routelens_eval -j
 mkdir -p "$RESULTS"
 ./build-eval/routelens_eval data/osm "$RESULTS" --pairs "$PAIRS" --alt-pairs "$ALT_PAIRS" --seed "$SEED"
 
-"$PYTHON" evaluation/compare_networkx.py "$RESULTS" --report docs/evaluation_phase2.md
+"$PYTHON" evaluation/compare_networkx.py "$RESULTS" --report docs/evaluation_phase3.md

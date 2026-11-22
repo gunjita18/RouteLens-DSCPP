@@ -1,12 +1,16 @@
-// test_c_routing_real.cpp — the C routing core against the existing C++ Dijkstra on the
-// REAL Dehradun network (data/osm). Skipped, and reported as skipped, if data/osm is absent.
+// test_c_routing_real.cpp — the C routing core and its C++ router classes on the REAL
+// Dehradun network (data/osm). Skipped, and reported as skipped, if data/osm is absent.
 //
-//   * 1,000 random pairs, time costs: the C and the C++ Dijkstra must find the same cost
-//     (equal-cost routes may differ edge by edge, so the cost is compared and the C route
-//     is checked to be a valid chain of edges);
-//   * 200 random pairs, distance costs: same;
-//   * penalty method on 100 random pairs: the first route is the cheapest, every route is valid,
-//     routes are different, reported costs are the real ones.
+//   * 1,000 random pairs, time costs, and 200 with distance costs: every route the C
+//     Dijkstra returns is a valid chain of edges from source to destination whose edge
+//     costs add up to the reported cost, and DijkstraRouter returns the same route;
+//   * penalty method on 100 random pairs: the first route is the cheapest, every route is
+//     valid, routes are different, reported costs are the real ones, and PenaltyRouter
+//     returns the same routes.
+//
+// Whether the costs are the SHORTEST is checked against NetworkX by
+// evaluation/run_evaluation.sh (docs/evaluation_phase3.md); this test needs no Python.
+// (Until Phase III it compared against the C++ Dijkstra, now removed from the build.)
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -14,10 +18,11 @@
 #include <random>
 #include <vector>
 
-#include "../src/algorithms/dijkstra.hpp"
 #include "../src/core/dijkstra.h"
 #include "../src/core/penalty.h"
 #include "../src/data/osm_loader.hpp"
+#include "../src/oop/route.hpp"
+#include "../src/oop/route_finder.hpp"
 
 static int failures = 0, checks = 0;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << ": " #c "\n"; } } while (0)
@@ -44,36 +49,37 @@ static bool sameRoute(const PathResult& a, const PathResult& b) {
     return true;
 }
 
-static void compareDijkstra(const Graph* g, const Weights& w, const char* name, int pairs, unsigned seed) {
+static void checkDijkstra(const Graph* g, const Weights& w, const char* name, int pairs, unsigned seed) {
     std::vector<double> cost(g->edge_count);
     CHECK(graph_compute_costs(g, &w, cost.data()) == 1);
+    const rl::DijkstraRouter router(g, cost);
     std::mt19937 rng(seed);
     std::uniform_int_distribution<int> pick(0, g->node_count - 1);
 
-    double cMs = 0, cppMs = 0;
-    int agree = 0, found = 0;
+    double ms = 0;
+    int found = 0, routerAgrees = 0;
     for (int i = 0; i < pairs; i++) {
         int src = pick(rng), dst = pick(rng);
         PathResult c;
         auto t0 = Clock::now();
-        int status = dijkstra_path(g, cost.data(), src, dst, nullptr, &c);
-        cMs += msSince(t0);
-        t0 = Clock::now();
-        rl::DijkstraResult cpp = rl::dijkstraWithCosts(g, cost, src, dst);
-        cppMs += msSince(t0);
-        CHECK(status == 0);
-        bool same = c.found == (cpp.found ? 1 : 0) &&
-                    (!c.found || std::fabs(c.cost - cpp.total_cost) <= 1e-9 * (1.0 + std::fabs(cpp.total_cost)));
-        if (same) agree++;
-        if (c.found) { found++; CHECK(validRoute(g, c, src, dst, cost)); }
+        CHECK(dijkstra_path(g, cost.data(), src, dst, nullptr, &c) == 0);
+        ms += msSince(t0);
+        const std::vector<rl::Route> viaRouter = router.find(src, dst);
+        if (c.found) {
+            found++;
+            CHECK(validRoute(g, c, src, dst, cost));
+            if (viaRouter.size() == 1 && viaRouter[0] == rl::Route::fromPath(c)) routerAgrees++;
+        } else if (viaRouter.empty()) {
+            routerAgrees++;
+        }
         path_free(&c);
     }
-    CHECK(agree == pairs);
-    std::cout << name << ": " << pairs << " pairs, " << found << " reachable, C and C++ agree on " << agree
-              << "; C " << cMs << " ms, C++ " << cppMs << " ms in total\n";
+    CHECK(routerAgrees == pairs);
+    std::cout << name << ": " << pairs << " pairs, " << found << " reachable, all valid; DijkstraRouter agrees on "
+              << routerAgrees << "; C " << ms << " ms in total\n";
 }
 
-static void testPenalty(const Graph* g, int pairs) {
+static void checkPenalty(const Graph* g, int pairs) {
     Weights w{ 0.0, 1.0, 0.0, 0.0 };
     std::vector<double> cost(g->edge_count);
     graph_compute_costs(g, &w, cost.data());
@@ -81,12 +87,15 @@ static void testPenalty(const Graph* g, int pairs) {
     std::uniform_int_distribution<int> pick(0, g->node_count - 1);
     int totalRoutes = 0, withAlternatives = 0;
     PenaltyOptions opt = penalty_default_options();
+    const rl::PenaltyRouter router(g, cost, {}, opt);
     for (int i = 0; i < pairs; i++) {
         int src = pick(rng), dst = pick(rng);
         PathResult best;
         CHECK(dijkstra_path(g, cost.data(), src, dst, nullptr, &best) == 0);
         PenaltyResult res;
         CHECK(penalty_routes(g, cost.data(), src, dst, nullptr, &opt, &res) == 0);
+        const std::vector<rl::Route> viaRouter = router.find(src, dst);
+        CHECK(static_cast<int>(viaRouter.size()) == res.count);
         if (!best.found) {
             CHECK(res.count == 0);
         } else {
@@ -95,6 +104,7 @@ static void testPenalty(const Graph* g, int pairs) {
             for (int r = 0; r < res.count; r++) {
                 CHECK(validRoute(g, res.routes[r], src, dst, cost));
                 for (int j = 0; j < r; j++) CHECK(!sameRoute(res.routes[r], res.routes[j]) || res.routes[r].edges.size == 0);
+                if (r < static_cast<int>(viaRouter.size())) CHECK(viaRouter[r] == rl::Route::fromPath(res.routes[r]));
             }
             totalRoutes += res.count;
             if (res.count > 1) withAlternatives++;
@@ -117,9 +127,9 @@ int main() {
     if (!rl::loadOsmNetwork("data/osm", net, err)) { std::cerr << "network: " << err << "\n"; return 1; }
     std::cout << "network: " << net.graph->node_count << " nodes, " << net.graph->edge_count << " edges\n";
 
-    compareDijkstra(net.graph, Weights{ 0.0, 1.0, 0.0, 0.0 }, "time costs", 1000, 42);
-    compareDijkstra(net.graph, Weights{ 1.0, 0.0, 0.0, 0.0 }, "distance costs", 200, 43);
-    testPenalty(net.graph, 100);
+    checkDijkstra(net.graph, Weights{ 0.0, 1.0, 0.0, 0.0 }, "time costs", 1000, 42);
+    checkDijkstra(net.graph, Weights{ 1.0, 0.0, 0.0, 0.0 }, "distance costs", 200, 43);
+    checkPenalty(net.graph, 100);
 
     std::cout << "test_c_routing_real: " << checks << " checks, " << failures << " failures\n";
     return failures ? 1 : 0;

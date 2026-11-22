@@ -10,6 +10,8 @@
 #ifndef ROUTELENS_BFS_H
 #define ROUTELENS_BFS_H
 
+#include "graph.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -33,6 +35,22 @@ int bfs_reach(int n, int m, const int *from, const int *to,
  */
 int bfs_strong_core(int n, int m, const int *from, const int *to,
                     int center, char *keep);
+
+/*
+ * Reachability for the what-if scenario mode, on the routing graph itself:
+ * can dst still be reached from src when some roads are closed, and in how few
+ * road segments? Edge costs are ignored (BFS, not Dijkstra).
+ *   blocked   optional: blocked[e] != 0 means edge e may not be used (NULL = none)
+ *   visited   optional: set to the number of nodes the search reached before it
+ *             stopped (it stops as soon as dst is taken out of the queue)
+ * Returns the fewest edges from src to dst (0 if src == dst), BFS_UNREACHABLE (-1)
+ * if dst cannot be reached, or BFS_ERROR (-2) on invalid input (NULL graph, node
+ * out of range) or out of memory; *visited is then 0.
+ * Uses the circular Queue and an int distance array: O(V + E) time, O(V) memory.
+ */
+#define BFS_UNREACHABLE (-1)
+#define BFS_ERROR (-2)
+int bfs_hops(const Graph *g, int src, int dst, const char *blocked, int *visited);
 
 #ifdef __cplusplus
 }

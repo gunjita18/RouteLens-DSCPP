@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Check routelens_eval results against NetworkX and write the Phase II report.
+"""Check routelens_eval results against NetworkX and write the Phase III report.
 
-Reads the CSV files written by routelens_eval, rebuilds the same weighted graph
+Reads the CSV files written by routelens_eval (the hand-written C routing core,
+run through DijkstraRouter and PenaltyRouter), rebuilds the same weighted graph
 in NetworkX for every weight profile, recomputes the shortest-path cost for each
-random origin-destination pair, and compares it with the cost found by
-  - Dijkstra on RouteLens's own binary min-heap,
-  - A* with the straight-line heuristic,
-  - Dijkstra on std::priority_queue.
-It then summarises run time, vertices expanded, and the quality of the
-alternative routes from the penalty method and from Yen's algorithm.
+random origin-destination pair, and compares it with the cost the C Dijkstra
+found. It then summarises the C Dijkstra's run time and the alternative routes
+from the penalty method.
 
-Usage: compare_networkx.py <results_dir> [--report docs/evaluation_phase2.md]
+Usage: compare_networkx.py <results_dir> [--report docs/evaluation_phase3.md]
+
+The Phase II version of this script (A*, Yen's algorithm, std::priority_queue)
+is in Git history together with docs/evaluation_phase2.md.
 """
 
 import argparse
@@ -50,7 +51,7 @@ def load_profiles(results):
 
 
 def build_graph(results, weights):
-    """DiGraph keeping the cheapest of any parallel edges, like the C++ search."""
+    """DiGraph keeping the cheapest of any parallel edges, as Dijkstra effectively does."""
     per_km, per_min, per_cong, per_sig = weights
     g = nx.DiGraph()
     for r in read_csv(os.path.join(results, "eval_graph.csv")):
@@ -82,15 +83,13 @@ def fmt(x, digits=1):
 
 
 def correctness(results, profiles):
+    """Per profile: pairs, mismatches against NetworkX, worst relative error."""
     rows = read_csv(os.path.join(results, "pairs.csv"))
     out = {}
     for name, weights in profiles.items():
         graph = build_graph(results, weights)
         subset = [r for r in rows if r["profile"] == name]
-        stats = {"pairs": len(subset), "unreachable": 0}
-        for algo in ("dijkstra", "astar", "pq"):
-            stats[algo] = {"mismatches": 0, "max_rel_err": 0.0}
-
+        stats = {"pairs": len(subset), "unreachable": 0, "mismatches": 0, "max_rel_err": 0.0}
         start = time.time()
         for r in subset:
             src, dst = int(r["src"]), int(r["dst"])
@@ -98,13 +97,14 @@ def correctness(results, profiles):
                 ref = nx.dijkstra_path_length(graph, src, dst, weight="w")
             except nx.NetworkXNoPath:
                 stats["unreachable"] += 1
+                if r["found"] != "0":     # C found a route NetworkX says does not exist
+                    stats["mismatches"] += 1
                 continue
-            for algo in ("dijkstra", "astar", "pq"):
-                got = float(r[f"{algo}_cost"])
-                err = abs(got - ref) / max(1.0, abs(ref))
-                stats[algo]["max_rel_err"] = max(stats[algo]["max_rel_err"], err)
-                if err > REL_TOL or r["found"] != "1":
-                    stats[algo]["mismatches"] += 1
+            got = float(r["cost"])
+            err = abs(got - ref) / max(1.0, abs(ref))
+            stats["max_rel_err"] = max(stats["max_rel_err"], err)
+            if err > REL_TOL or r["found"] != "1":
+                stats["mismatches"] += 1
         stats["networkx_seconds"] = time.time() - start
         out[name] = stats
         print(f"networkx check '{name}': {len(subset)} pairs in {stats['networkx_seconds']:.0f}s",
@@ -117,56 +117,45 @@ def performance(results, profiles):
     out = {}
     for name in profiles:
         subset = [r for r in rows if r["profile"] == name and r["found"] == "1"]
-        entry = {"pairs": len(subset)}
-        for algo in ("dijkstra", "astar", "pq"):
-            us = [float(r[f"{algo}_us"]) for r in subset]
-            ex = [float(r[f"{algo}_expanded"]) for r in subset]
-            entry[algo] = {
-                "mean_ms": statistics.mean(us) / 1000.0,
-                "median_ms": statistics.median(us) / 1000.0,
-                "p95_ms": percentile(us, 95) / 1000.0,
-                "mean_expanded": statistics.mean(ex),
-            }
-        # Per-pair ratios are more robust than a ratio of means.
-        ratios_astar = [float(r["dijkstra_us"]) / float(r["astar_us"])
-                        for r in subset if float(r["astar_us"]) > 0]
-        ratios_heap = [float(r["pq_us"]) / float(r["dijkstra_us"])
-                       for r in subset if float(r["dijkstra_us"]) > 0]
-        entry["astar_speedup_median"] = statistics.median(ratios_astar)
-        entry["heap_vs_pq_median"] = statistics.median(ratios_heap)
-        entry["expansion_ratio"] = (
-            entry["dijkstra"]["mean_expanded"] / entry["astar"]["mean_expanded"])
-        out[name] = entry
+        us = [float(r["time_us"]) for r in subset]
+        edges = [float(r["route_edges"]) for r in subset]
+        out[name] = {
+            "pairs": len(subset),
+            "mean_ms": statistics.mean(us) / 1000.0 if us else float("nan"),
+            "median_ms": statistics.median(us) / 1000.0 if us else float("nan"),
+            "p95_ms": percentile(us, 95) / 1000.0,
+            "mean_edges": statistics.mean(edges) if edges else float("nan"),
+        }
     return out
 
 
 def alternatives(results):
-    rows = read_csv(os.path.join(results, "alternatives.csv"))
-    out = {}
-    for method in ("penalty", "yen"):
-        subset = [r for r in rows if r["method"] == method]
-        if not subset:
-            continue
+    rows = [r for r in read_csv(os.path.join(results, "alternatives.csv")) if r["method"] == "penalty"]
+    if not rows:
+        return None
 
-        def col(key):
-            return [float(r[key]) for r in subset]
+    def col(key):
+        return [float(r[key]) for r in rows]
 
-        multi = [r for r in subset if int(r["routes"]) >= 2]
-        out[method] = {
-            "pairs": len(subset),
-            "routes": statistics.mean(col("routes")),
-            "usable": statistics.mean(col("usable")),
-            "pairs_with_2plus_usable": sum(1 for r in subset if int(r["usable"]) >= 2) / len(subset),
-            "pairs_with_3plus_usable": sum(1 for r in subset if int(r["usable"]) >= 3) / len(subset),
-            "mean_overlap": statistics.mean(float(r["mean_overlap"]) for r in multi) if multi else float("nan"),
-            "max_overlap": statistics.mean(float(r["max_overlap"]) for r in multi) if multi else float("nan"),
-            "mean_stretch": statistics.mean(float(r["mean_stretch"]) for r in multi) if multi else float("nan"),
-            "max_stretch": statistics.mean(float(r["max_stretch"]) for r in multi) if multi else float("nan"),
-            "mean_ms": statistics.mean(col("time_ms")),
-            "median_ms": statistics.median(col("time_ms")),
-            "p95_ms": percentile(col("time_ms"), 95),
-        }
-    return out
+    multi = [r for r in rows if int(r["routes"]) >= 2]
+
+    def mean_multi(key):
+        return statistics.mean(float(r[key]) for r in multi) if multi else float("nan")
+
+    return {
+        "pairs": len(rows),
+        "routes": statistics.mean(col("routes")),
+        "usable": statistics.mean(col("usable")),
+        "pairs_with_2plus_usable": sum(1 for r in rows if int(r["usable"]) >= 2) / len(rows),
+        "pairs_with_3plus_usable": sum(1 for r in rows if int(r["usable"]) >= 3) / len(rows),
+        "mean_overlap": mean_multi("mean_overlap"),
+        "max_overlap": mean_multi("max_overlap"),
+        "mean_stretch": mean_multi("mean_stretch"),
+        "max_stretch": mean_multi("max_stretch"),
+        "mean_ms": statistics.mean(col("time_ms")),
+        "median_ms": statistics.median(col("time_ms")),
+        "p95_ms": percentile(col("time_ms"), 95),
+    }
 
 
 def read_meta(results):
@@ -190,10 +179,10 @@ def cpu_name():
     return platform.processor() or "unknown CPU"
 
 
-def write_report(path, meta, corr, perf, alts, findings_path):
+def write_report(path, meta, profiles, corr, perf, alt, findings_path):
     L = []
     add = L.append
-    add("# Phase II algorithm evaluation\n")
+    add("# Phase III algorithm evaluation: the C routing core\n")
     add("_Generated by `evaluation/compare_networkx.py` from the output of "
         "`routelens_eval`. Re-run `evaluation/run_evaluation.sh` to reproduce._\n")
 
@@ -202,10 +191,10 @@ def write_report(path, meta, corr, perf, alts, findings_path):
         f"{int(meta.get('nodes', 0)):,} vertices, {int(meta.get('edges', 0)):,} directed edges.")
     add(f"- Origin-destination pairs: {meta.get('pairs')} uniformly random vertex pairs "
         f"(seed {meta.get('seed')}); every pair is reachable because the graph is one SCC.")
-    add(f"- Alternative-route study: first {meta.get('alt_pairs')} of those pairs, 5 routes requested per method.")
-    add(f"- Fastest edge in the graph: {float(meta.get('max_speed_kph', 0)):.0f} km/h "
-        f"(the A* time heuristic assumes this speed everywhere, so it is weak when this is high).")
-    add("- Edge costs use free-flow travel times only (no live traffic, `traffic_index` = 0), "
+    add("- Code under test: the hand-written C core (`src/core/dijkstra.c`, `penalty.c`, "
+        "`minheap.c`, `stack.c`) called through `DijkstraRouter` and `PenaltyRouter` "
+        "(`src/oop/route_finder.hpp`), exactly as the server calls it.")
+    add("- Edge costs use free-flow travel times only (no traffic snapshot, `traffic_index` = 0), "
         "so these results measure the algorithms, not ETA accuracy.")
     add(f"- Machine: {cpu_name()}, {os.cpu_count()} logical CPUs, {platform.system()} {platform.release()}; "
         f"single-threaded, Release build.")
@@ -213,59 +202,42 @@ def write_report(path, meta, corr, perf, alts, findings_path):
         f"(parallel edges collapsed to the cheapest), Python {platform.python_version()}.")
     add("- Weight profiles: " + "; ".join(
         f"**{n}** (per km {w[0]:g}, per minute {w[1]:g}, per congested minute {w[2]:g}, per signal {w[3]:g})"
-        for n, w in PROFILES.items()) + ".\n")
+        for n, w in profiles.items()) + ".\n")
 
-    add("## 1. Correctness against NetworkX\n")
+    add("## 1. C Dijkstra against NetworkX\n")
     add(f"A result counts as a mismatch when its cost differs from NetworkX's by more than "
-        f"{REL_TOL:g} (relative).\n")
-    add("| Profile | Pairs | Dijkstra (own heap) | A* | Dijkstra (`std::priority_queue`) | Max relative error |")
-    add("|---|---:|---:|---:|---:|---:|")
-    for name, s in corr.items():
-        worst = max(s[a]["max_rel_err"] for a in ("dijkstra", "astar", "pq"))
-        add(f"| {name} | {s['pairs']} | {s['dijkstra']['mismatches']} mismatches | "
-            f"{s['astar']['mismatches']} mismatches | {s['pq']['mismatches']} mismatches | {worst:.2e} |")
-    add("")
-
-    add("## 2. Dijkstra vs A*\n")
-    add("A* uses an admissible, consistent heuristic: straight-line distance, plus a time bound from the "
-        "fastest edge speed in the graph. Same optimal cost, fewer vertices expanded.\n")
-    add("| Profile | Algorithm | Mean ms | Median ms | 95th pct ms | Mean vertices expanded |")
-    add("|---|---|---:|---:|---:|---:|")
-    for name, p in perf.items():
-        for algo, label in (("dijkstra", "Dijkstra"), ("astar", "A*")):
-            a = p[algo]
-            add(f"| {name} | {label} | {fmt(a['mean_ms'], 2)} | {fmt(a['median_ms'], 2)} | "
-                f"{fmt(a['p95_ms'], 2)} | {fmt(a['mean_expanded'], 0)} |")
-    add("")
-    add("| Profile | Vertices expanded: Dijkstra / A* | Median per-pair speedup of A* |")
-    add("|---|---:|---:|")
-    for name, p in perf.items():
-        add(f"| {name} | {p['expansion_ratio']:.2f}x | {p['astar_speedup_median']:.2f}x |")
-    add("")
-
-    add("## 3. Own binary min-heap vs `std::priority_queue`\n")
-    add("Both run the same Dijkstra (lazy deletion, early exit) on the same precomputed costs; "
-        "only the priority queue differs. Ratio above 1 means the own heap is faster.\n")
-    add("| Profile | Own heap mean ms | `std::priority_queue` mean ms | Median per-pair ratio (std / own) |")
+        f"{REL_TOL:g} (relative), or when one finds a route and the other does not.\n")
+    add("| Profile | Pairs | Mismatches | Max relative error |")
     add("|---|---:|---:|---:|")
-    for name, p in perf.items():
-        add(f"| {name} | {fmt(p['dijkstra']['mean_ms'], 2)} | {fmt(p['pq']['mean_ms'], 2)} | "
-            f"{p['heap_vs_pq_median']:.2f}x |")
+    for name, s in corr.items():
+        add(f"| {name} | {s['pairs']} | {s['mismatches']} | {s['max_rel_err']:.2e} |")
     add("")
 
-    add("## 4. Penalty method vs Yen's algorithm\n")
-    add("Both methods were asked for 5 routes under the balanced profile. *Overlap* is the share of the "
-        "shorter route's length that another route also uses (averaged over route pairs). *Stretch* is a "
-        "route's cost divided by the cheapest route's cost. *Usable* counts routes that survive the "
-        "RouteLens filter (stretch <= 1.5 and overlap < 0.85 with every route kept).\n")
-    add("| Metric | Penalty method | Yen's algorithm |")
-    add("|---|---:|---:|")
-    p, y = alts.get("penalty"), alts.get("yen")
-    if p and y:
+    add("## 2. C Dijkstra run time\n")
+    add("Time for one `DijkstraRouter::find` call (search, route rebuild with the stack, copy into a "
+        "`Route`). The search stops when the destination is settled.\n")
+    add("| Profile | Pairs | Mean ms | Median ms | 95th pct ms | Mean route length (edges) |")
+    add("|---|---:|---:|---:|---:|---:|")
+    for name, p in perf.items():
+        add(f"| {name} | {p['pairs']} | {fmt(p['mean_ms'], 2)} | {fmt(p['median_ms'], 2)} | "
+            f"{fmt(p['p95_ms'], 2)} | {fmt(p['mean_edges'], 0)} |")
+    add("")
+
+    add("## 3. Penalty method (alternative routes)\n")
+    add(f"`PenaltyRouter` with the server's settings: {meta.get('alt_routes')} routes requested, edge "
+        f"penalty x{meta.get('penalty_factor')}, a route dropped when more than "
+        f"{float(meta.get('max_overlap', 0)) * 100:.0f}% of its edges belong to an earlier route or it "
+        f"costs over {meta.get('max_stretch')}x the cheapest; balanced profile; first "
+        f"{meta.get('alt_pairs')} pairs. *Overlap* is the share of the shorter route's length another "
+        "route also uses (averaged over route pairs). *Stretch* is a route's cost divided by the "
+        "cheapest. *Usable* counts routes that pass the server's later filter (stretch <= 1.5 and "
+        "overlap < 0.85 with every route kept).\n")
+    add("| Metric | Value |")
+    add("|---|---:|")
+    if alt:
         def row(label, key, digits=2, pct=False):
-            def f(v):
-                return f"{v * 100:.0f}%" if pct else fmt(v, digits)
-            add(f"| {label} | {f(p[key])} | {f(y[key])} |")
+            v = alt[key]
+            add(f"| {label} | {f'{v * 100:.0f}%' if pct else fmt(v, digits)} |")
         row("Pairs evaluated", "pairs", 0)
         row("Routes returned (mean)", "routes")
         row("Usable routes after filter (mean)", "usable")
@@ -287,27 +259,23 @@ def write_report(path, meta, corr, perf, alts, findings_path):
         f.write("\n".join(L))
 
 
-PROFILES = {}
-
-
 def main():
-    global PROFILES
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("results", help="directory written by routelens_eval")
-    ap.add_argument("--report", default="docs/evaluation_phase2.md")
-    ap.add_argument("--findings", default=os.path.join(os.path.dirname(__file__), "findings.md"),
+    ap.add_argument("--report", default="docs/evaluation_phase3.md")
+    ap.add_argument("--findings", default=os.path.join(os.path.dirname(__file__), "findings_phase3.md"),
                     help="hand-written interpretation appended to the report if present")
     args = ap.parse_args()
 
-    PROFILES = load_profiles(args.results)
+    profiles = load_profiles(args.results)
     meta = read_meta(args.results)
 
-    corr = correctness(args.results, PROFILES)
-    perf = performance(args.results, PROFILES)
-    alts = alternatives(args.results)
-    write_report(args.report, meta, corr, perf, alts, args.findings)
+    corr = correctness(args.results, profiles)
+    perf = performance(args.results, profiles)
+    alt = alternatives(args.results)
+    write_report(args.report, meta, profiles, corr, perf, alt, args.findings)
 
-    bad = sum(s[a]["mismatches"] for s in corr.values() for a in ("dijkstra", "astar", "pq"))
+    bad = sum(s["mismatches"] for s in corr.values())
     print(f"report written to {args.report}; total mismatches vs NetworkX: {bad}")
     return 1 if bad else 0
 

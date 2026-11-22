@@ -93,3 +93,42 @@ int bfs_strong_core(int n, int m, const int *from, const int *to,
     free(back);
     return kept;
 }
+
+int bfs_hops(const Graph *g, int src, int dst, const char *blocked, int *visited) {
+    if (visited != NULL) *visited = 0;
+    if (g == NULL || g->node_count < 1 || src < 0 || src >= g->node_count ||
+        dst < 0 || dst >= g->node_count)
+        return BFS_ERROR;
+
+    const int n = g->node_count;
+    int *hops = (int *)malloc((size_t)n * sizeof(int));   /* -1 = not reached yet */
+    Queue q;
+    if (hops == NULL || q_init(&q, n) != 0) { free(hops); return BFS_ERROR; }
+    for (int v = 0; v < n; v++) hops[v] = -1;
+
+    hops[src] = 0;
+    q_push(&q, src);                    /* cannot fail: capacity n, each node enqueued once */
+    int reached = 1;
+    int result = BFS_UNREACHABLE;
+
+    while (!q_empty(&q)) {
+        int u = q_pop(&q);
+        if (u == dst) {                 /* BFS takes nodes out in order of hops: this is the fewest */
+            result = hops[u];
+            break;
+        }
+        for (int e = g->first_out[u]; e != -1; e = g->next_out[e]) {
+            if (blocked != NULL && blocked[e]) continue;
+            int v = g->edges[e].to;
+            if (v < 0 || v >= n || hops[v] != -1) continue;
+            hops[v] = hops[u] + 1;      /* mark on enqueue so v is never queued twice */
+            q_push(&q, v);
+            reached++;
+        }
+    }
+
+    q_free(&q);
+    free(hops);
+    if (visited != NULL) *visited = reached;
+    return result;
+}
