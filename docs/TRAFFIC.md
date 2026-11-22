@@ -5,54 +5,58 @@ traffic module does, its inputs and outputs, every threshold it uses and why,
 and how to call it from the server. All numbers below are the defaults in the
 code (`src/traffic/`).
 
-> **Status: traffic source is moving from live calls to a saved snapshot.**
-> The Phase III design reads TomTom data from a file saved before the demo
-> (`preprocess/fetch_traffic.py` -> `data/traffic/traffic.csv`), so the demo works
-> offline. Sections 3-6 and 10 below describe the live TomTom client, which the
-> server still uses until it is switched to `makeTrafficProvider()`; after that
-> switch the client, its cache and rate limiter are retired from the build (they stay
-> in Git history). The new design is described in "Traffic snapshot (offline demo
-> data)" and "C++ class hierarchies" at the end of this document. Sections 7-9, 11-13
-> (per-edge traffic, route summary, junctions, scenarios) apply to both.
+> **Status: the server reads a saved traffic snapshot; it makes no TomTom calls.**
+> TomTom data is fetched once, before the demo, by `preprocess/fetch_traffic.py` into
+> `data/traffic/traffic.csv`; the server loads it at startup (`makeTrafficProvider`), so the
+> demo works offline. The earlier live client (HTTP, segment cache, daily cap) and its
+> tests were removed from the build; they remain in Git history. The pure parts of the
+> old live path, TomTom response parsing and matching of a segment to graph edges
+> (`traffic.cpp`), are still in the code and tested, but the server no longer uses them.
+> See "Traffic snapshot (offline demo data)" and "C++ class hierarchies" at the end.
 
 ## 1. Files
 
 | File | Purpose |
 |---|---|
-| `src/traffic/traffic.hpp/.cpp` | Rules, TomTom response parsing, matching TomTom segments to graph edges, per-edge traffic state, route sampling |
-| `src/traffic/tomtom_client.hpp/.cpp` | TomTom Traffic Flow client with free-plan guardrails; `updateRouteTraffic()` (live path, to be retired) |
+| `src/traffic/traffic.hpp/.cpp` | Rules, per-edge traffic state, traffic levels; TomTom response parsing and segment-to-edge matching (no longer used by the server) |
 | `src/oop/traffic_provider.*`, `scenario.*`, `load_error.hpp` | Class hierarchies: `TrafficProvider` (free-flow, snapshot) and `Scenario` (normal, rain, rush hour, incident) |
 | `src/core/traffic_reader.*` | C reader that loads the saved snapshot into a hash table |
 | `preprocess/fetch_traffic.py` | Saves the TomTom snapshot (run once, before the demo) |
 | `src/traffic/eta.hpp/.cpp` | Route summary: ETA with and without traffic, traffic level, data coverage, junction count; display formatting |
 | `src/traffic/junctions.hpp/.cpp` | Major-junction list: loading, snapping to the graph, counting per route |
-| `src/data/http_client.*`, `json_util.hpp`, `geo.cpp` | libcurl HTTP client, cJSON helpers, distance/geometry helpers |
+| `src/server/osm_route_provider.cpp` | Uses the traffic provider: edges with data take their measured travel time; route cards report the share of the route covered and the traffic level |
+| `src/data/json_util.hpp`, `geo.cpp` | cJSON helpers, distance/geometry helpers |
 | `data/junctions/major_junctions.csv` | 41 documented junctions (+9 pending), with sources |
-| `tests/test_traffic.cpp`, `tests/test_junctions.cpp` | Offline tests (110 + 31 checks) |
+| `tests/test_traffic.cpp`, `test_junctions.cpp`, `test_scenarios.cpp`, `test_traffic_provider.cpp`, `test_route_provider.cpp` | Offline tests |
 
-CMake library: `routelens_traffic` (links `routelens_osm`, libcurl, cJSON).
-System packages: `sudo apt install -y libcurl4-openssl-dev libcjson-dev`.
+CMake library: `routelens_traffic` (links `routelens_osm` and cJSON).
+System package: `sudo apt install -y libcjson-dev`. No libcurl is needed: only
+`preprocess/fetch_traffic.py` talks to TomTom, with the Python standard library.
 
-## 2. Data flow for one route
+## 2. Data flow
 
 ```
-route edges (from routing)
-  -> sampleRoute(): a point every 400 m, only on road classes TomTom covers
-  -> TomTomClient::fetch(point) for each sample (cache answers most of them)
-  -> TrafficState::applySegment(): TomTom segment -> matching graph edges
-  -> summarizeRoute(): ETA, level, coverage, junctions
+before the demo:   fetch_traffic.py --(TomTom)--> data/traffic/traffic.csv
+
+at server start:   traffic.csv -> traffic_reader.c (hash table) -> SnapshotProvider
+                   OsmRouteProvider reads it once: per-edge travel time and congestion
+
+per request:       route search (edge costs include the measured times)
+                   -> per route: ETA, share of the route covered by data, traffic level
 ```
 
-## 3. TomTom request
+The rain and rush-hour scenarios ignore the snapshot and start from free-flow speeds, so a
+slowdown is never counted twice; the normal and incident scenarios use it.
+
+## 3. TomTom request (made by `preprocess/fetch_traffic.py`)
 
 - Endpoint: `GET {baseUrl}/traffic/services/4/flowSegmentData/absolute/{zoom}/json?point={lat},{lon}&unit=KMPH&key={key}`
 - Defaults: `baseUrl = https://api.tomtom.com`, `zoom = 10`
 - Fields used: `frc`, `currentSpeed`, `freeFlowSpeed`, `currentTravelTime`,
   `freeFlowTravelTime`, `confidence`, `roadClosure`, `coordinates.coordinate[]`
   (the segment shape, ordered in the direction of travel)
-- The API key is passed in `TomTomOptions::apiKey` by the caller. The server
-  should read it from the `TOMTOM_API_KEY` environment variable. The key appears
-  only in request URLs, never in log or error messages.
+- The API key is read from the `TOMTOM_API_KEY` environment variable only. It appears
+  only in the request URL, never in output, error messages or files.
 
 Measured on Dehradun (Oct 2026): segments are long on major roads (6–22 km, one
 speed for the whole stretch; zoom 22 returned the same 20.6 km segment as zoom 10)
@@ -77,36 +81,34 @@ motorway, trunk, primary, secondary, tertiary or unclassified (and their `_link`
 roads). Residential, service and living streets are skipped: TomTom has no
 data there, and skipping them saves quota.
 
-## 5. Free-plan guardrails (`TomTomOptions`)
+## 5. Free-plan guardrails (`preprocess/fetch_traffic.py`)
 
 TomTom Freemium: 2,500 non-tile requests per day, HTTP 429 when exceeded (no
 charge without a card), about 5 requests per second.
 
-| Name | Default | Behaviour |
+| Setting | Value | Behaviour |
 |---|---|---|
-| `cacheTtlS` | 300 s | A point within `maxSnapM` of a segment fetched in the last 5 minutes is answered from memory. Segments are cached even when they were too far from the point that fetched them (they are valid data for their own road). "No coverage" points are cached too. |
-| `dailyCap` | 2000 | Own hard stop below TomTom's 2,500. Counted per local date in `usageFile` (`data/cache/tomtom_usage.txt`, format `YYYY-MM-DD N`); survives restarts; every request counts, including failed ones. |
-| `minIntervalS` | 0.25 s | At most 4 requests per second |
-| `maxCachedSegments` | 200 | Segment cache size. When full, the least recently used segment is evicted (Aayush's `LRUCache`). No-coverage points are capped at the same number. |
-| `maxConsecutiveFailures` | 3 | After 3 network or 5xx failures in a row, the client stops asking for the rest of the run (outage) |
+| `--max-requests` | 2000 | Own hard stop below TomTom's 2,500 per run; edges not reached are counted as "not fetched" |
+| `MIN_INTERVAL_S` | 0.25 s | At most 4 requests per second |
+| Segment reuse | 50 m | A midpoint within 50 m of an already fetched TomTom segment reuses its answer; a point with no usable TomTom road is remembered so that neighbours are not asked again |
+| `MAX_CONSECUTIVE_FAILURES` | 5 | After 5 network or 5xx failures in a row the run stops |
+| HTTP 401 / 403 / 429 | | The run stops at once (rejected key, quota); the message never contains the URL or key |
 
-The segment cache is bounded (`maxCachedSegments`), so a long-running server does not
-grow without limit. A segment returned by `fetch()` stays valid until the next `fetch()`.
+The script keeps no usage counter between runs: the daily limit is TomTom's, enforced by HTTP 429.
 
-## 6. Fetch results (`FetchStatus`)
+## 6. Outcome of each edge in a fetch run
 
-| Status | When | Request made? | Client afterwards |
-|---|---|---|---|
-| `Ok` | HTTP 200, TomTom road within `maxSnapM` | yes | |
-| `CachedOk` | point lies on a fresh cached segment | no | |
-| `NoCoverage` | road farther than `maxSnapM`, or HTTP 400 | yes | point cached as a miss |
-| `CachedNoCoverage` | known miss within `maxSnapM`, still fresh | no | |
-| `DailyCapReached` | `dailyCap` reached today | no | |
-| `Disabled` | no key, or stopped after an earlier error | no | |
-| `AuthError` | HTTP 401/403 | yes | disabled for this run |
-| `QuotaExceeded` | HTTP 429 | yes | disabled for this run |
-| `Unavailable` | network error or HTTP 5xx | yes | disabled after 3 in a row |
-| `BadResponse` | other HTTP status, or unparsable body | yes | |
+| Outcome | When | Request made? |
+|---|---|---|
+| recorded | TomTom road within 50 m and confidence 0.5 or more | once per segment; later edges reuse it |
+| `reused` | midpoint within 50 m of a fetched segment | no |
+| `wrong_road` | TomTom's road is more than 50 m from the midpoint | yes (the edge records nothing) |
+| `no_coverage` | HTTP 400/404, or next to a remembered miss | yes, or no |
+| `low_confidence` | confidence below 0.5 | as for recorded |
+| `errors` | network error, HTTP 5xx or an unusable body | yes |
+| `not_fetched` | the request limit or an abort was reached first | no |
+
+The first real run: 2,445 candidate edges, 168 requests, 2,047 recorded (see "Traffic snapshot").
 
 ## 7. Per-edge traffic (`TrafficState`)
 
@@ -151,46 +153,46 @@ seconds internally and format only for display.
 - Counting: a junction counts when the route **arrives** at one of its nodes,
   once per route; the start node does not count.
 
-## 10. Using it in the server
+## 10. Using it in the server (`src/server/main.cpp`)
 
 ```cpp
-// once at startup
-rl::JunctionIndex junctions;
-std::string err;
-rl::loadJunctions("data/junctions/major_junctions.csv", osm, 50.0, junctions, err);
-
-rl::TomTomOptions opt;
-opt.apiKey = getenv("TOMTOM_API_KEY") ? getenv("TOMTOM_API_KEY") : "";   // empty = free-flow only
-rl::HttpClient http("RouteLens/1.0 (contact email)", 20);
-rl::TomTomClient tomtom(opt, [&](const std::string& url) { return http.get(url); });
-
-// per request, per candidate route
-rl::TrafficState state(osm);   // note: writes traffic_index into osm.graph
-rl::updateRouteTraffic(osm, state, tomtom, routeEdges, opt.rules);
-rl::RouteSummary s = rl::summarizeRoute(osm, state, routeEdges, opt.rules, 30.0, &junctions);
-// RouteInfo: eta = s.etaS (seconds), eta_free_flow = s.freeFlowS, distance = s.distanceM,
-//            traffic level = rl::levelName(s.level), junctions = s.junctions,
-//            data coverage = s.liveShare / s.historicalShare / s.estimatedShare
+// once at startup (after the road network and junctions are loaded)
+std::string warning;
+auto traffic = rl::makeTrafficProvider(network, "data/traffic/traffic.csv", &warning);
+// missing or unreadable file: a FreeFlowProvider and a warning; speeds are "estimated"
+provider = std::make_unique<rl::OsmRouteProvider>(network, &junctions, traffic.get());
 ```
 
-Thread safety: `TomTomClient` and `TrafficState` are not thread-safe. In a
-multithreaded server, use one `TrafficState` per request on its own copy of
-the graph's traffic fields, and guard the shared `TomTomClient` with a mutex.
+`OsmRouteProvider` reads the traffic provider once, into per-edge arrays, and never writes to
+the shared network, so concurrent requests need no lock. For each edge with data:
 
-## 11. Tests and suggestions
+- travel time = length / measured speed (a measured speed of 0 means a closed road and keeps the free-flow time);
+- congestion = `1 - current / free-flow`, which feeds the "traffic" priority and the route's traffic score.
 
-- `test_traffic` (110 checks): parsing, rules, matching (position and direction),
-  `TrafficState`, every `FetchStatus`, cache expiry, daily cap across restarts and
-  dates, rate limiting, outage cut-off, key never in messages, route summary.
+Per route it reports: `eta` (with traffic) and the free-flow ETA without traffic;
+`coverage.typical_pct` = share of the route length with snapshot data (the rest is
+`estimated_pct`; `live_pct` is always 0, because a snapshot is not live);
+`traffic` = Low / Medium / High from the length-weighted speed ratio over the edges with data
+(0.8 or more Low, 0.5 to 0.8 Medium, below 0.5 High), or "Estimated" if no edge has data.
+
+`GET /api/traffic/status` returns `source` (`snapshot` or `free_flow_fallback`), `fetched_at`,
+`edges_with_data` and any load `warning`. The page shows "Traffic data: <fetched_at>".
+
+Thread safety: the provider and its arrays are read-only after construction. `TrafficState`
+(used by the older summary code and the tests) is not thread-safe; use one per request.
+
+## 11. Tests
+
+- `test_traffic` (68 checks): parsing, rules, segment matching (position and direction),
+  `TrafficState`, route summary.
 - `test_junctions` (31 checks): loading (quoted CSV fields, pending rows, bad
   input), snapping, two nodes of one junction counted once, waits only on
   free-flow edges.
-- Both run offline with a fake `FetchFn`, so they use no TomTom quota.
-
-Useful additional tests: a route that leaves and re-enters the same TomTom
-segment; a segment crossing the route at right angles (should not match);
-`dailyCap = 0`; a usage file with garbage content; many concurrent requests
-once the server adds a mutex.
+- `test_traffic_provider`, `test_scenarios`: the class hierarchies, the factory, the fallback.
+- `test_route_provider`: routes with measured traffic (slower, faster than free flow, closed
+  road, rain ignoring the data, the congestion priority) using a fake `TrafficProvider`.
+- `test_traffic_reader`, `fetch_traffic_test`: the snapshot file and the fetch script.
+- All run offline and use no TomTom quota.
 
 ## 12. Known limitations
 
@@ -205,44 +207,46 @@ once the server adds a mutex.
 
 ## 13. Scenarios (`src/oop/scenario.hpp`)
 
-| Scenario | Starts from | Change | TomTom requests |
+| Scenario | Starts from | Change | Uses the traffic snapshot |
 |---|---|---|---|
-| `normal` | live TomTom + free-flow | none | yes |
-| `rain` | free-flow (live ignored) | every road's speed x `rainFactor` = 0.88 | none |
-| `rush_hour` | free-flow (live ignored) | main roads x `rushMainFactor` = 0.65, others x `rushOtherFactor` = 0.85 | none |
-| `incident` | live TomTom + free-flow | chosen edges blocked, or slowed to `incidentSlowFactor` = 0.30 | yes |
+| `normal` | snapshot + free-flow | none | yes |
+| `rain` | free-flow (snapshot ignored) | every road's speed x `rainFactor` = 0.88 | no |
+| `rush_hour` | free-flow (snapshot ignored) | main roads x `rushMainFactor` = 0.65, others x `rushOtherFactor` = 0.85 | no |
+| `incident` | snapshot + free-flow | chosen edges blocked, or slowed to `incidentSlowFactor` = 0.30 | yes |
 
 - `rainFactor`: FHWA Road Weather Management reports free-flow speed reductions of 6-17%
   in heavy rain (US freeways); 0.88 is the middle. Dehradun monsoon conditions may be worse.
 - `rushMainFactor` / `rushOtherFactor`: **provisional**, to be replaced by ratios measured
   with TomTom on Dehradun's main roads during the evening rush (a daytime run measured 0.70).
-- Rain and rush hour ignore live data so a slowdown is never counted twice.
+- Rain and rush hour ignore the snapshot so a slowdown is never counted twice.
 - Junction waits are added on scenario edges (a scenario estimate has no real waiting in it).
 - Blocked edges: `EdgeTraffic::blocked`, routing cost 1e9 in `computeCosts()`, and
   `RouteSummary::anyBlocked` when a route uses one. Reachability (BFS) is the routing side's job
   and can read `state.edge(e).blocked`.
 - The summary reports `scenarioShare`; `coverageLabel()` says e.g. "scenario estimate on 100% of the route".
 
-Server usage:
+Usage with the class hierarchy (see "C++ class hierarchies" below):
 
 ```cpp
-rl::Scenario sc;
-if (!rl::parseScenario(scenarioText, sc)) { /* 400: unknown scenario */ }
-rl::ScenarioSettings scenarioSettings;          // defaults above
+rl::ScenarioKind kind;
+if (!rl::parseScenario(scenarioText, kind)) { /* 400: unknown scenario */ }
 rl::TrafficState state(osm);
-if (rl::scenarioNeedsLiveTraffic(sc))
-    rl::updateRouteTraffic(osm, state, tomtom, routeEdges, opt.rules);
-rl::Incident incident;                          // only for "incident": edges the user picked
+rl::applyProvider(state, *traffic);              // snapshot data, where the scenario uses it
+rl::Incident incident;                           // only for "incident": edges the user picked
 incident.edges = pickedEdges;
 incident.blocked = userChoseBlock;
-rl::applyScenario(state, sc, scenarioSettings, sc == rl::Scenario::Incident ? &incident : nullptr);
-auto s = rl::summarizeRoute(osm, state, routeEdges, opt.rules, 30.0, &junctions);
+auto scenario = rl::makeScenario(kind, rl::ScenarioSettings{}, &incident);
+scenario->apply(state);
+auto s = rl::summarizeRoute(osm, state, routeEdges, rl::TrafficRules{}, 30.0, &junctions);
 ```
+
+The running server computes the same effects per request from read-only arrays instead of
+a shared `TrafficState` (see section 10), so parallel requests need no lock.
 
 
 ## Traffic snapshot (offline demo data)
 
-The server can run from a saved snapshot instead of calling TomTom live, so a demo
+The server runs from a saved snapshot instead of calling TomTom live, so a demo
 needs no internet and stays inside TomTom's free quota.
 
 **Create it** (once, before the demo; needs internet and a key):
@@ -322,5 +326,5 @@ marked `DataSource::Historical` because a saved snapshot is not live traffic, so
 summaries count them under "typical for this time". The user interface should show
 `provider->description()` (the snapshot time) next to that label.
 
-**Not done here:** the server still calls the live TomTom client; switching it to
-`makeTrafficProvider` is the server-wiring task.
+The server uses these classes: `main.cpp` calls `makeTrafficProvider` at startup and gives
+the result to `OsmRouteProvider` (section 10).
