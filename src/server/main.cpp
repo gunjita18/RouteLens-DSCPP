@@ -276,9 +276,9 @@ int main() {
         CROW_LOG_WARNING << "PREVIEW MODE: /api/routes returns SAMPLE routes, not real ones";
     }
 
-    // Road network (owned by the map-data module) and the KD-tree that snaps
-    // clicks onto it. Without the CSVs the server still runs; /api/routes then
-    // answers 503.
+    // Road network (owned by the map-data module) and the linear-search road
+    // snapper that puts clicks onto it. Without the CSVs the server still runs;
+    // /api/routes then answers 503.
     rl::OsmNetwork network;
     std::unique_ptr<rl::RoadSnapper> snapper;
     {
@@ -288,7 +288,7 @@ int main() {
             snapper = std::make_unique<rl::RoadSnapper>(network);
             CROW_LOG_INFO << "road network loaded from " << dir << ": " << network.stats.keptNodes
                           << " nodes, " << network.stats.keptEdges << " edges, "
-                          << snapper->pointCount() << " KD-tree points";
+                          << snapper->segmentCount() << " road segments for snapping";
         } else {
             CROW_LOG_WARNING << "road network NOT loaded from " << dir << ": " << loadErr;
         }

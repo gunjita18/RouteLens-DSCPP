@@ -16,16 +16,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
-add_executable(test_kdtree
-    tests/test_kdtree.cpp
-    src/spatial/kdtree.cpp
-)
-target_include_directories(test_kdtree PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/spatial
-)
-target_compile_options(test_kdtree PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME KDTreeTests COMMAND test_kdtree)
-
 add_executable(test_lru_cache
     tests/test_lru_cache.cpp
 )
@@ -76,12 +66,11 @@ target_include_directories(test_preview_provider PRIVATE
 target_compile_options(test_preview_provider PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME PreviewProviderTests COMMAND test_preview_provider)
 
-# Road network: the map-data module's graph and OSM loader, plus the KD-tree
-# road snapper that connects clicked points to it.
+# Road network: the map-data module's graph and OSM loader, plus the
+# linear-search road snapper that connects clicked points to it.
 add_library(routelens_osm STATIC
     src/data/osm_loader.cpp
     src/data/geo.cpp
-    src/spatial/kdtree.cpp
     src/spatial/road_snapper.cpp
     src/algorithms/dijkstra.cpp
     src/algorithms/astar.cpp
