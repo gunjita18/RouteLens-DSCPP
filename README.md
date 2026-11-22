@@ -20,7 +20,7 @@ fetch_traffic.py ─► snapshot ► snapshot reader, union-find,         Traffi
 1. **Data preparation (offline, once).** `preprocess/export_osm.py` writes the road network (nodes, directed edges, shapes) to CSV; `preprocess/fetch_traffic.py` saves TomTom speeds for the main roads to `traffic.csv`.
 2. **Loading.** The loader maps OSM ids to graph indices with a hand-written hash table, and cleans the graph with forward and reverse breadth-first search, keeping the part of the network where every node can reach every other (31,802 of 32,110 nodes, the same as NetworkX).
 3. **Traffic.** A `TrafficProvider` (snapshot or free-flow) gives each road its measured speed if it has one; a `Scenario` (normal, rain, rush hour, incident) changes speeds for what-if questions.
-4. **Routing.** The server finds the cheapest route with Dijkstra, alternatives with the penalty method, and tops the list up with Yen's k-shortest paths; routes are filtered for detours and overlap, then ranked by a weighted score of time, distance, junctions and traffic.
+4. **Routing.** The server generates candidates with the hand-written C penalty method and Dijkstra (`src/core/`); routes are filtered for detours and overlap, then ranked by a weighted score of time, distance, junctions and traffic.
 5. **Display.** The browser asks `/api/routes` (or `/api/scenario` for closures) and draws the routes, cards and a comparison chart.
 
 ### Data structures and algorithms written by hand (C, `src/core/`)
@@ -33,12 +33,12 @@ fetch_traffic.py ─► snapshot ► snapshot reader, union-find,         Traffi
 | Union-find (rank, path compression) | `dsu.c` | independent check of the network's connected parts (72, as NetworkX) |
 | Binary min-heap, stack | `minheap.c`, `stack.c` | Dijkstra's priority queue, rebuilding a route |
 | Merge sort (stable), binary search | `sort.c`, `search.c` | ranking, sorted-array lookup |
-| Dijkstra, penalty method | `dijkstra.c`, `penalty.c` | cheapest route and alternatives (verified, see below) |
+| Dijkstra, penalty method | `dijkstra.c`, `penalty.c` | cheapest route and alternatives, used by the server |
 | Snapshot reader | `traffic_reader.c` | loads `traffic.csv` into the hash table |
 
 The C++ layer (`src/oop/`) wraps these in class hierarchies: `TrafficProvider` (`FreeFlowProvider`, `SnapshotProvider`) and `Scenario` (`NormalScenario`, `RainScenario`, `RushHourScenario`, `IncidentScenario`), with RAII ownership of the C structures.
 
-**Status of the C routing core:** the C Dijkstra and penalty method are tested and agree with the C++ Dijkstra on 1,200 random pairs of the real network, but **the server still routes with the C++ implementation in `src/algorithms/`**. See `docs/C_ROUTING_CORE.md`. A* is implemented and used only by the evaluation program (`routelens_eval`), not by the server.
+**The C routing core is what the server runs.** The C Dijkstra agrees with the earlier C++ Dijkstra on 1,200 random pairs of the real network; replacing the earlier route generation (C++ penalty method plus Yen's algorithm) changed the answers little on 120 test questions (details and one case where the fastest route got 6.8 % slower: `docs/C_ROUTING_CORE.md`). The earlier C++ implementations, including Yen's algorithm and A*, are kept with their tests but are not used by the server; A* is used only by the evaluation program (`routelens_eval`).
 
 ## Repository layout
 
@@ -48,7 +48,7 @@ The C++ layer (`src/oop/`) wraps these in class hierarchies: `TrafficProvider` (
 | `src/oop/` | C++ class hierarchies: traffic providers, scenarios, `LoadError` |
 | `src/data/` | OSM loader (`osm_loader`), geometry helpers |
 | `src/traffic/` | Traffic levels, per-edge state, ETA and route summary, major junctions, LRU cache, rate limiter |
-| `src/algorithms/` | C++ routing used by the server: Dijkstra, penalty method, Yen, scenarios (closures), plus A* and Pareto ranking (not used by the server) |
+| `src/algorithms/` | What-if closures and reachability (used by the server); earlier C++ Dijkstra, penalty method, Yen, A* and Pareto ranking (kept with tests, not used by the server) |
 | `src/spatial/` | KD-tree and the road snapper that places clicks on the network |
 | `src/server/` | Crow REST API, route provider, request validation, route cache |
 | `src/app/` | Command-line tools: `routelens_osm_info`, `routelens_junctions_info`, `routelens_eval`, `routelens_lookup_benchmark` |
@@ -148,7 +148,7 @@ docker run -p 18080:18080 -v "$PWD/data/osm:/app/data/osm:ro" -v "$PWD/data/traf
 - **Traffic is one saved snapshot.** The first capture (a Sunday morning) shows almost no congestion; a weekday rush-hour snapshot would show more. Only trunk, primary and secondary roads have data, and 23 TomTom segments cover about 2,000 edges, so one speed applies to many roads. Residential roads always use estimated speeds.
 - **ETAs are not validated against measured trips.** Road-class speeds (for example 20 km/h on residential roads) and the 30 s wait per major junction are provisional assumptions; the rain and rush-hour factors are literature or provisional values.
 - **OpenStreetMap maps only 6 traffic signals in Dehradun.** The documented major junctions are therefore assumed to be signalised for the waiting-time estimate; this is a modelling assumption, not surveyed data.
-- **The C routing core is not yet used by the server** (see above).
+- **Route generation changed late.** Switching the server to the C routing core and dropping Yen's algorithm slightly changed the answers on a few test questions; see `docs/C_ROUTING_CORE.md`.
 - The snapshot may be subject to TomTom's terms on storing their data; it is not committed to the repository.
 
 ## Data and attribution

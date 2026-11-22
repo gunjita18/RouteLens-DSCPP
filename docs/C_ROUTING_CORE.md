@@ -1,9 +1,9 @@
 # C routing core: min-heap, stack, merge sort, Dijkstra, penalty method
 
 Hand-written C, as the simplified Phase III design asks (`src/core/`). Each piece has its own
-test. **Status: the library and its tests exist and are verified, but the server still routes
-with the earlier C++ implementation** (`src/algorithms/`). Switching `OsmRouteProvider` to these
-functions is a separate step (see "Not done").
+test. **The server uses it:** `OsmRouteProvider` generates routes with `penalty_routes` and
+`dijkstra_path` (see "In the server"). The earlier C++ implementations in `src/algorithms/`
+(Dijkstra, penalty method, Yen, A*) are kept with their tests but the server no longer calls them.
 
 | File | What | Cost |
 |---|---|---|
@@ -56,12 +56,40 @@ Defaults: `k = 3`, factor 1.4, overlap 0.7, no stretch limit, at most `5k` searc
 
 `graph.c` moved into the C library target so these plain-C tests can build graphs.
 
+## In the server (`src/server/osm_route_provider.cpp`)
+
+Route generation per request:
+
+1. Edge costs for the user's priorities (including junction waits and measured traffic).
+2. `penalty_routes`: up to 5 routes, factor 1.4, a route dropped if more than 70 % of its edges
+   are shared with an earlier one or if it costs over 1.5 times the cheapest.
+3. `dijkstra_path` on time-only costs: the fastest route, added if the penalty method did not
+   already return it.
+4. As before: routes over 1.5 times the shortest distance and routes sharing 85 % or more of their
+   roads with an accepted route are dropped, at most three are kept, and they are ranked by the
+   weighted score of time, distance, junctions and traffic.
+
+**What changed in behaviour.** The earlier code used the C++ penalty method (factor 1.5) and, when no
+closure was active, topped the candidates up with Yen's k-shortest paths. Yen's algorithm is outside
+the syllabus and is no longer called. To see the effect, the server before and after the change was
+asked the same 120 questions (40 random pairs of major junctions, 1.5 to 9 km apart, in the normal,
+rain and rush-hour scenarios; 0 errors on either side):
+
+| Measure | Result |
+|---|---|
+| Routes per question | 2.97 before, 2.97 after (two questions got fewer, two more) |
+| Fastest route's ETA | identical in 119 of 120; in one (Globe Chowk to Ajanta Chowk, normal) 6.8 % slower |
+| Recommended route's ETA | identical in 113 of 120; mean change -0.3 %; individual changes from 27 % faster to 13 % slower |
+
+So the change is small on average and not an improvement everywhere: with Yen's extra candidates gone,
+a few questions lose a slightly better route and a few find a better one. The likely reason for the one
+slower fastest route (not verified) is that the search charges a junction wait on every entry while the
+ETA counts each junction once per route, so the route with the lowest ETA is not always the one with
+the lowest search cost; Yen's extra candidates sometimes found it. Asking for 8 penalty routes instead of
+5 did not change this.
+
 ## Not done
 
-- The server does not call this code yet. `OsmRouteProvider` uses `src/algorithms/` (Dijkstra, penalty
-  method with factor 1.5 and its own overlap filter, Yen's algorithm). Switching means choosing the
-  parameters (the design says factor 1.4 and 70 % overlap), removing Yen's algorithm and A*
-  (outside the syllabus), and re-running the route-provider tests.
 - A re-check against NetworkX (the plan's version) was not run; the check above is against the C++
   implementation on the same costs.
 - Timing in the real-network test shows the C version faster in total on this machine (about
