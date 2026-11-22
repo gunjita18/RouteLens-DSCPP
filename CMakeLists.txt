@@ -166,7 +166,7 @@ target_compile_options(test_route_provider PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RouteProviderTests COMMAND test_route_provider)
 # Algorithm evaluation harness (see evaluation/run_evaluation.sh)
 add_executable(routelens_eval src/app/eval_main.cpp)
-target_link_libraries(routelens_eval PRIVATE routelens_osm)
+target_link_libraries(routelens_eval PRIVATE routelens_osm routelens_routing)
 target_compile_options(routelens_eval PRIVATE -Wall -Wextra -pedantic)
 # Yen's K-shortest loopless paths tests
 add_executable(test_yen tests/test_yen.cpp)
