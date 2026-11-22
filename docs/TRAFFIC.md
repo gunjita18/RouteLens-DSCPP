@@ -8,30 +8,28 @@ code (`src/traffic/`).
 > **Status: the server reads a saved traffic snapshot; it makes no TomTom calls.**
 > TomTom data is fetched once, before the demo, by `preprocess/fetch_traffic.py` into
 > `data/traffic/traffic.csv`; the server loads it at startup (`makeTrafficProvider`), so the
-> demo works offline. The earlier live client (HTTP, segment cache, daily cap) and its
-> tests were removed from the build; they remain in Git history. The pure parts of the
-> old live path, TomTom response parsing and matching of a segment to graph edges
-> (`traffic.cpp`), are still in the code and tested, but the server no longer uses them.
+> demo works offline. The earlier live path (HTTP client, segment cache, daily cap,
+> TomTom response parsing, matching of a segment to graph edges, route sampling) and its
+> tests were removed; they remain in Git history. The server needs no HTTP or JSON library.
 > See "Traffic snapshot (offline demo data)" and "C++ class hierarchies" at the end.
 
 ## 1. Files
 
 | File | Purpose |
 |---|---|
-| `src/traffic/traffic.hpp/.cpp` | Rules, per-edge traffic state, traffic levels; TomTom response parsing and segment-to-edge matching (no longer used by the server) |
+| `src/traffic/traffic.hpp/.cpp` | Traffic-level thresholds, per-edge traffic state (`TrafficState`) |
 | `src/oop/traffic_provider.*`, `scenario.*`, `load_error.hpp` | Class hierarchies: `TrafficProvider` (free-flow, snapshot) and `Scenario` (normal, rain, rush hour, incident) |
 | `src/core/traffic_reader.*` | C reader that loads the saved snapshot into a hash table |
 | `preprocess/fetch_traffic.py` | Saves the TomTom snapshot (run once, before the demo) |
 | `src/traffic/eta.hpp/.cpp` | Route summary: ETA with and without traffic, traffic level, data coverage, junction count; display formatting |
 | `src/traffic/junctions.hpp/.cpp` | Major-junction list: loading, snapping to the graph, counting per route |
 | `src/server/osm_route_provider.cpp` | Uses the traffic provider: edges with data take their measured travel time; route cards report the share of the route covered and the traffic level |
-| `src/data/json_util.hpp`, `geo.cpp` | cJSON helpers, distance/geometry helpers |
+| `src/data/geo.cpp` | Distance and geometry helpers |
 | `data/junctions/major_junctions.csv` | 41 documented junctions (+9 pending), with sources |
 | `tests/test_traffic.cpp`, `test_junctions.cpp`, `test_scenarios.cpp`, `test_traffic_provider.cpp`, `test_route_provider.cpp` | Offline tests |
 
-CMake library: `routelens_traffic` (links `routelens_osm` and cJSON).
-System package: `sudo apt install -y libcjson-dev`. No libcurl is needed: only
-`preprocess/fetch_traffic.py` talks to TomTom, with the Python standard library.
+CMake library: `routelens_traffic` (links `routelens_osm`). It needs no system library:
+only `preprocess/fetch_traffic.py` talks to TomTom, with the Python standard library.
 
 ## 2. Data flow
 
@@ -62,24 +60,27 @@ Measured on Dehradun (Oct 2026): segments are long on major roads (6–22 km, on
 speed for the whole stretch; zoom 22 returned the same 20.6 km segment as zoom 10)
 and shorter on smaller roads (1.75 km for an FRC4 road). For points on minor
 roads, TomTom answers with the nearest major road, up to 2.6 km away; the
-distance check below rejects those.
+50 m rule below rejects those.
 
-## 4. Rules and thresholds (`TrafficRules`)
+## 4. Rules and thresholds
+
+**Used when the snapshot is made** (`preprocess/fetch_traffic.py`, again in `traffic_reader.c`):
+
+| Rule | Value | Meaning | Origin |
+|---|---|---|---|
+| Wrong-road distance | 50 m | A TomTom answer whose road is farther than this from the query point is a different road: nothing is recorded | Measured: correct matches were 0–15 m away, wrong ones 305–2,593 m |
+| Minimum confidence | 0.5 | Below: data ignored (free flow) | TomTom: 0.5 = historical only |
+| Roads queried | trunk, primary, secondary | TomTom has little data on smaller roads | Measured |
+
+**Used when routes are summarised** (`TrafficRules` in `traffic.hpp`):
 
 | Name | Default | Meaning | Origin |
 |---|---|---|---|
-| `maxSnapM` | 50 m | A TomTom answer whose road is farther than this from the query point is "no coverage" | Measured: correct matches were 0–15 m away, wrong ones 305–2,593 m |
-| `matchM` | 20 m | A graph edge matches a segment only if its 25%, 50% and 75% points are all within this distance of the segment | Design choice |
-| `maxBearingDiffDeg` | 45° | ...and the edge points the same way as the nearest piece of the segment | Design choice; opposite-direction edges stay free-flow |
-| `minConfidence` | 0.5 | Below: data ignored (free-flow) | TomTom: 0.5 = historical only |
-| `liveConfidence` | 0.6 | Above: labelled "live"; 0.5–0.6: "typical for this time" | TomTom: > 0.6 = real-time probe data, 0.5–0.6 = weighted mix (documented in Azure Maps' description of the same API) |
 | `lowRatio` | 0.8 | current/free-flow ≥ 0.8: Low traffic | Our design choice, to be tuned |
 | `highRatio` | 0.5 | current/free-flow < 0.5: High traffic; between: Medium | Our design choice, to be tuned |
 
-Sampling: every 400 m (`spacingM`), only on edges whose OSM class is
-motorway, trunk, primary, secondary, tertiary or unclassified (and their `_link`
-roads). Residential, service and living streets are skipped: TomTom has no
-data there, and skipping them saves quota.
+A snapshot edge is never labelled "live": a saved snapshot is not live traffic, and the old
+live/typical split by confidence (0.6) went away with the live client.
 
 ## 5. Free-plan guardrails (`preprocess/fetch_traffic.py`)
 
@@ -112,15 +113,15 @@ The first real run: 2,445 candidate edges, 168 requests, 2,047 recorded (see "Tr
 
 ## 7. Per-edge traffic (`TrafficState`)
 
-For each matched edge: `source` (Live / Historical), `ratio` = current ÷
-free-flow speed, `confidence`, `durationS` = edge length ÷ TomTom's current
-speed, and `graph->edges[e].traffic_index` = 1 − ratio (clamped to 0–1).
-A road closure (`roadClosure` or speed 0) keeps the free-flow duration, sets
-`closed` and `traffic_index = 1`. Better-confidence data is never overwritten
-by worse. Unmatched edges stay free-flow (`durationS` = free-flow duration).
+`applyProvider(state, provider)` writes measured data into the state. For each edge that has
+data: `source` = Historical (a saved snapshot), `ratio` = current ÷ free-flow speed,
+`confidence`, `durationS` = edge length ÷ measured speed, and
+`graph->edges[e].traffic_index` = 1 − ratio (clamped to 0–1). A measured speed of 0
+marks the road closed: the free-flow duration is kept, `closed` is set and `traffic_index = 1`.
+Edges without data stay free-flow (`durationS` = free-flow duration).
 
 `computeCosts(weights, out)` gives edge costs like `graph_compute_costs()`,
-but with the traffic-aware `durationS`, so the routing can use live times.
+but with the measured `durationS`, so the routing can use the measured times.
 
 ## 8. Route summary (`summarizeRoute`)
 
@@ -183,9 +184,9 @@ Thread safety: the provider and its arrays are read-only after construction. `Tr
 
 ## 11. Tests
 
-- `test_traffic` (68 checks): parsing, rules, segment matching (position and direction),
-  `TrafficState`, route summary.
-- `test_junctions` (31 checks): loading (quoted CSV fields, pending rows, bad
+- `test_traffic` (51 checks): traffic levels, display formatting, `TrafficState`, route summary,
+  with measured data supplied by a fake `TrafficProvider` (`tests/fake_traffic.hpp`).
+- `test_junctions` (30 checks): loading (quoted CSV fields, pending rows, bad
   input), snapping, two nodes of one junction counted once, waits only on
   free-flow edges.
 - `test_traffic_provider`, `test_scenarios`: the class hierarchies, the factory, the fallback.
@@ -322,9 +323,9 @@ scenario->apply(state);
 
 `applyProvider` sets travel time to length / measured speed, as the design specifies; a
 measured speed of 0 marks the edge closed and keeps its free-flow time. Snapshot edges are
-marked `DataSource::Historical` because a saved snapshot is not live traffic, so route
-summaries count them under "typical for this time". The user interface should show
-`provider->description()` (the snapshot time) next to that label.
+marked `DataSource::Historical` (named "saved snapshot" by `sourceName`) because a saved
+snapshot is not live traffic; route summaries count them as "typical", and the page shows
+the snapshot time (`provider->description()`) next to the data label.
 
 The server uses these classes: `main.cpp` calls `makeTrafficProvider` at startup and gives
 the result to `OsmRouteProvider` (section 10).

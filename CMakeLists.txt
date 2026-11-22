@@ -114,13 +114,6 @@ add_executable(routelens_server
 target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelens_traffic)
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
 
-# ---------------------------------------------------------------- system libraries
-# Install once: sudo apt install -y libcjson-dev
-find_path(CJSON_INCLUDE_DIR cjson/cJSON.h)
-find_library(CJSON_LIBRARY NAMES cjson)
-if(NOT CJSON_INCLUDE_DIR OR NOT CJSON_LIBRARY)
-    message(FATAL_ERROR "cJSON not found. Install it with: sudo apt install -y libcjson-dev")
-endif()
 
 # ---------------------------------------------------------------- road network tools and tests
 # Use the routelens_osm library defined above.
@@ -190,8 +183,7 @@ add_library(routelens_traffic STATIC
     src/oop/traffic_provider.cpp
     src/data/geo.cpp
 )
-target_include_directories(routelens_traffic PUBLIC ${CJSON_INCLUDE_DIR})
-target_link_libraries(routelens_traffic PUBLIC routelens_osm ${CJSON_LIBRARY})
+target_link_libraries(routelens_traffic PUBLIC routelens_osm)
 target_compile_options(routelens_traffic PRIVATE -Wall -Wextra -pedantic)
 
 add_executable(test_traffic tests/test_traffic.cpp)
