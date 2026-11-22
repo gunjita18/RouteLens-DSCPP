@@ -1,6 +1,5 @@
 // test_traffic.cpp — offline tests for the traffic module: parsing, rules,
-// matching, TrafficState, the TomTom client's guardrails, and the ETA summary.
-// TomTom is replaced by a fake fetch function: no network, no quota used.
+// matching, TrafficState and the ETA summary. No network is used.
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -8,7 +7,6 @@
 #include <sstream>
 
 #include "../src/traffic/eta.hpp"
-#include "../src/traffic/tomtom_client.hpp"
 
 namespace fs = std::filesystem;
 using namespace rl;
@@ -160,144 +158,6 @@ static void testMatchingAndState() {
     CHECK(tomtomCoversRoadClass("primary_link") && !tomtomCoversRoadClass("residential"));
 }
 
-// ---------------------------------------------------------------- TomTom client
-
-struct Fake {
-    int calls = 0;
-    std::string lastUrl;
-    HttpResponse next;
-    double clock = 1000.0;
-    double slept = 0.0;
-    std::string today = "2026-10-18";
-};
-
-static TomTomClient makeClient(Fake& f, const std::string& usageFile, int cap = 2000, const std::string& key = "SECRETKEY") {
-    TomTomOptions o;
-    o.apiKey = key;
-    o.dailyCap = cap;
-    o.usageFile = usageFile;
-    return TomTomClient(
-        o, [&f](const std::string& url) { f.calls++; f.lastUrl = url; return f.next; },
-        [&f] { return f.clock; }, [&f](double s) { f.slept += s; f.clock += s; }, [&f] { return f.today; });
-}
-
-static HttpResponse ok(const std::string& body) { HttpResponse r; r.status = 200; r.body = body; return r; }
-static HttpResponse status(long s) { HttpResponse r; r.status = s; return r; }
-
-static void testClient() {
-    fs::path dir = fs::temp_directory_path() / "routelens_test_tomtom";
-    fs::remove_all(dir);
-    std::string usage = (dir / "usage.txt").string();
-
-    // Fresh answer, then a cache hit for another point on the same road.
-    Fake f;
-    f.next = ok(flowJson(20, 40, 0.9));
-    {
-        TomTomClient c = makeClient(f, usage);
-        FetchResult r1 = c.fetch({ 30.3005, 78.00002 });
-        CHECK(r1.status == FetchStatus::Ok && f.calls == 1 && r1.snapM < 5);
-        CHECK(f.lastUrl.find("point=30.300500,78.000020") != std::string::npos);
-        CHECK(f.lastUrl.find("key=SECRETKEY") != std::string::npos);
-        FetchResult r2 = c.fetch({ 30.3015, 78.0 });
-        CHECK(r2.status == FetchStatus::CachedOk && f.calls == 1 && r2.segmentIndex == r1.segmentIndex);
-
-        // A point 1.4 km away gets the same far road back: no coverage, cached as a miss.
-        FetchResult r3 = c.fetch({ 30.310, 78.010 });
-        CHECK(r3.status == FetchStatus::NoCoverage && f.calls == 2 && r3.snapM > 1000);
-        CHECK(r3.message.find("SECRETKEY") == std::string::npos);
-        CHECK(c.fetch({ 30.3101, 78.0101 }).status == FetchStatus::CachedNoCoverage && f.calls == 2);
-
-        // Rate limit: requests 2 and 3 came at the same clock time, so the client waited.
-        CHECK(f.slept >= 0.24);
-
-        // After 5 minutes the cache expires and TomTom is asked again.
-        f.clock += 301;
-        CHECK(c.fetch({ 30.3015, 78.0 }).status == FetchStatus::Ok && f.calls == 3);
-        CHECK(c.requestsToday() == 3 && c.requestsThisRun() == 3 && c.cacheHits() == 2);
-    }
-
-    // The daily count survives a restart, and resets on a new date.
-    {
-        TomTomClient c = makeClient(f, usage);
-        CHECK(c.requestsToday() == 3);
-        f.today = "2026-10-19";
-        TomTomClient d = makeClient(f, usage);
-        CHECK(d.requestsToday() == 0);
-        f.today = "2026-10-18";
-    }
-
-    // Own daily cap: no request is made once it is reached.
-    {
-        Fake g;
-        g.next = ok(flowJson(20, 40, 0.9));
-        fs::remove(usage);
-        TomTomClient c = makeClient(g, usage, 1);
-        CHECK(c.fetch({ 30.3005, 78.0 }).status == FetchStatus::Ok && g.calls == 1);
-        FetchResult r = c.fetch({ 30.400, 78.100 });
-        CHECK(r.status == FetchStatus::DailyCapReached && g.calls == 1);
-    }
-
-    // Errors.
-    auto once = [&](HttpResponse resp, FetchStatus expect, bool thenDisabled) {
-        Fake h;
-        h.next = resp;
-        fs::remove(usage);
-        TomTomClient c = makeClient(h, usage);
-        FetchResult r = c.fetch({ 30.3005, 78.0 });
-        CHECK(r.status == expect);
-        CHECK(r.message.find("SECRETKEY") == std::string::npos);
-        FetchResult again = c.fetch({ 30.400, 78.100 });
-        if (thenDisabled) CHECK(again.status == FetchStatus::Disabled && h.calls == 1);
-        else CHECK(h.calls == 2);
-    };
-    once(status(403), FetchStatus::AuthError, true);
-    once(status(401), FetchStatus::AuthError, true);
-    once(status(429), FetchStatus::QuotaExceeded, true);
-    once(status(400), FetchStatus::NoCoverage, false);
-    once(status(503), FetchStatus::Unavailable, false);
-    once(ok("{\"oops\":1}"), FetchStatus::BadResponse, false);
-    HttpResponse netErr;
-    netErr.error = "Could not resolve host";
-    once(netErr, FetchStatus::Unavailable, false);
-
-    // Outage: after 3 network failures in a row, stop asking for this run.
-    {
-        Fake o;
-        o.next = netErr;
-        fs::remove(usage);
-        TomTomClient c = makeClient(o, usage);
-        CHECK(c.fetch({ 30.30, 78.00 }).status == FetchStatus::Unavailable);
-        CHECK(c.fetch({ 30.31, 78.01 }).status == FetchStatus::Unavailable);
-        CHECK(c.fetch({ 30.32, 78.02 }).status == FetchStatus::Unavailable && o.calls == 3);
-        FetchResult r = c.fetch({ 30.33, 78.03 });
-        CHECK(r.status == FetchStatus::Disabled && o.calls == 3);
-        CHECK(r.message.find("unreachable 3 times") != std::string::npos);
-    }
-    // A success in between resets the failure count.
-    {
-        Fake o;
-        fs::remove(usage);
-        TomTomClient c = makeClient(o, usage);
-        o.next = netErr;
-        c.fetch({ 30.30, 78.00 });
-        c.fetch({ 30.31, 78.01 });
-        o.next = ok(flowJson(20, 40, 0.9));
-        CHECK(c.fetch({ 30.3005, 78.0 }).status == FetchStatus::Ok);
-        o.next = netErr;
-        c.fetch({ 30.40, 78.10 });
-        c.fetch({ 30.41, 78.11 });
-        CHECK(c.fetch({ 30.42, 78.12 }).status == FetchStatus::Unavailable && o.calls == 6);
-    }
-
-    // No key: never calls TomTom.
-    {
-        Fake k;
-        TomTomClient c = makeClient(k, usage, 2000, "");
-        CHECK(c.fetch({ 30.3, 78.0 }).status == FetchStatus::Disabled && k.calls == 0);
-    }
-    fs::remove_all(dir);
-}
-
 // ---------------------------------------------------------------- route summary
 
 static void testRouteSummary() {
@@ -318,13 +178,11 @@ static void testRouteSummary() {
     CHECK(s0.level == TrafficLevel::Unknown);
     CHECK(coverageLabel(s0) == "no traffic data on this route: ETA is an estimate");
 
-    // With TomTom data on the primary road (live, half speed).
-    fs::path dir = fs::temp_directory_path() / "routelens_test_tomtom2";
-    Fake f;
-    f.next = ok(flowJson(20, 40, 0.9));
-    TomTomClient c = makeClient(f, (dir / "usage.txt").string());
-    std::vector<FetchResult> res = updateRouteTraffic(net, st, c, route, r, 400.0);
-    CHECK(res.size() == 1 && res[0].status == FetchStatus::Ok && f.calls == 1);
+    // With TomTom data on the primary road (confidence 0.9, half speed): the
+    // segment matches the two primary edges, not the residential one.
+    FlowSegment seg;
+    CHECK(parseFlowSegment(flowJson(20, 40, 0.9), seg, err));
+    CHECK(st.applySegment(seg, r, route) == 2);
     RouteSummary s = summarizeRoute(net, st, route, r, 30.0);
     double live = 111.2 / (20 / 3.6);
     // Signal B is on a live edge (wait already in TomTom's speed); D is on a free-flow edge.
@@ -332,14 +190,12 @@ static void testRouteSummary() {
     CHECK(near(s.liveShare, 222.4 / 318.4, 1e-9) && near(s.estimatedShare, 96.0 / 318.4, 1e-9));
     CHECK(near(s.meanRatio, 0.5, 1e-9) && s.level == TrafficLevel::Medium && !s.anyClosure);
     CHECK(coverageLabel(s) == "live on 70% of the route, typical on 0%, estimated on 30%");
-    fs::remove_all(dir);
 }
 
 int main() {
     testParse();
     testRules();
     testMatchingAndState();
-    testClient();
     testRouteSummary();
     std::cout << "test_traffic: " << checks << " checks, " << failures << " failures\n";
     return failures ? 1 : 0;

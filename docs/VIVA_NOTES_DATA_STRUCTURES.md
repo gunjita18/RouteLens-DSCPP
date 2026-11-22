@@ -109,5 +109,6 @@ To prevent slicing: copying a derived object into a base object would lose the d
 ## Memory safety
 
 **How do you know there are no memory leaks?**
-Every C test, and the C++ provider and scenario tests, run clean under AddressSanitizer, LeakSanitizer and UBSan.
-Valgrind (named in the design) has not been run yet because it was not installed; run `valgrind --leak-check=full ./build/test_hashtable` once it is.
+Valgrind (`--leak-check=full`, leaks of every kind counted as errors) reports no errors and no leaks for all eight C tests and for the three C++ tests that own C structures: `test_traffic_provider`, `test_scenarios` and `test_osm` (which loads the real 32,110-node network).
+Run it with `scripts/check_memory.sh build` (about a minute). AddressSanitizer, LeakSanitizer and UBSan also run clean on the same tests.
+What this does and does not show: the tests exercise the normal paths and the error paths they cover (missing file, bad rows, empty input); Valgrind only checks the code that actually runs.

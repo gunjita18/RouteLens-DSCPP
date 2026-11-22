@@ -115,15 +115,14 @@ target_link_libraries(routelens_server PRIVATE Crow::Crow routelens_osm routelen
 target_compile_options(routelens_server PRIVATE -Wall -Wextra -pedantic)
 
 # ---------------------------------------------------------------- system libraries
-# Install once: sudo apt install -y libcurl4-openssl-dev libcjson-dev
-find_package(CURL REQUIRED)
+# Install once: sudo apt install -y libcjson-dev
 find_path(CJSON_INCLUDE_DIR cjson/cJSON.h)
 find_library(CJSON_LIBRARY NAMES cjson)
 if(NOT CJSON_INCLUDE_DIR OR NOT CJSON_LIBRARY)
     message(FATAL_ERROR "cJSON not found. Install it with: sudo apt install -y libcjson-dev")
 endif()
 
-# ---------------------------------------------------------------- road network tools and tests (Sneha)
+# ---------------------------------------------------------------- road network tools and tests
 # Use the routelens_osm library defined above.
 add_executable(routelens_osm_info src/app/osm_info_main.cpp)
 target_link_libraries(routelens_osm_info PRIVATE routelens_osm)
@@ -182,19 +181,17 @@ add_executable(test_route_ranking tests/test_route_ranking.cpp)
 target_link_libraries(test_route_ranking PRIVATE routelens_osm)
 target_compile_options(test_route_ranking PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME RouteRankingTests COMMAND test_route_ranking)
-# ---------------------------------------------------------------- live traffic (Sneha)
+# ---------------------------------------------------------------- traffic module (rules, per-edge state, ETA)
 add_library(routelens_traffic STATIC
     src/traffic/traffic.cpp
-    src/traffic/tomtom_client.cpp
     src/traffic/eta.cpp
     src/traffic/junctions.cpp
     src/oop/scenario.cpp
     src/oop/traffic_provider.cpp
-    src/data/http_client.cpp
     src/data/geo.cpp
 )
 target_include_directories(routelens_traffic PUBLIC ${CJSON_INCLUDE_DIR})
-target_link_libraries(routelens_traffic PUBLIC routelens_osm CURL::libcurl ${CJSON_LIBRARY})
+target_link_libraries(routelens_traffic PUBLIC routelens_osm ${CJSON_LIBRARY})
 target_compile_options(routelens_traffic PRIVATE -Wall -Wextra -pedantic)
 
 add_executable(test_traffic tests/test_traffic.cpp)
@@ -202,7 +199,7 @@ target_link_libraries(test_traffic PRIVATE routelens_traffic)
 target_compile_options(test_traffic PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME TrafficTests COMMAND test_traffic)
 
-# ---------------------------------------------------------------- major junctions (Sneha)
+# ---------------------------------------------------------------- major junctions
 add_executable(routelens_junctions_info src/app/junctions_info_main.cpp)
 target_link_libraries(routelens_junctions_info PRIVATE routelens_traffic)
 target_compile_options(routelens_junctions_info PRIVATE -Wall -Wextra -pedantic)
@@ -212,17 +209,12 @@ target_link_libraries(test_junctions PRIVATE routelens_traffic)
 target_compile_options(test_junctions PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME JunctionTests COMMAND test_junctions)
 
-# ---------------------------------------------------------------- scenarios (Sneha)
+# ---------------------------------------------------------------- scenarios
 add_executable(test_scenarios tests/test_scenarios.cpp)
 target_link_libraries(test_scenarios PRIVATE routelens_traffic)
 target_compile_options(test_scenarios PRIVATE -Wall -Wextra -pedantic)
 add_test(NAME ScenarioTests COMMAND test_scenarios)
 
-# ---------------------------------------------------------------- TomTom cache limit (Sneha)
-add_executable(test_tomtom_cache tests/test_tomtom_cache.cpp)
-target_link_libraries(test_tomtom_cache PRIVATE routelens_traffic)
-target_compile_options(test_tomtom_cache PRIVATE -Wall -Wextra -pedantic)
-add_test(NAME TomTomCacheTests COMMAND test_tomtom_cache)
 
 # ---------------------------------------------------------------- keep assert() in tests
 # The tests check results with assert(). A Release build defines NDEBUG, which

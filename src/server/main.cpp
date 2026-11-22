@@ -18,13 +18,12 @@
 #include "route_provider.hpp"
 #include "osm_route_provider.hpp"
 #include "../algorithms/scenario.hpp"
-#include "../data/http_client.hpp"
 #include "../data/osm_loader.hpp"
+#include "../oop/traffic_provider.hpp"
 #include "../spatial/road_snapper.hpp"
 #include "../traffic/junctions.hpp"
 #include "../traffic/lru_cache.hpp"
 #include "../traffic/rate_limiter.hpp"
-#include "../traffic/tomtom_client.hpp"
 
 namespace {
 
@@ -46,11 +45,12 @@ std::string junctionsFile() {
     return f ? f : "data/junctions/major_junctions.csv";
 }
 
-// Directory for the TomTom daily-usage counter (override with ROUTELENS_CACHE_DIR).
-// It must be writable; in Docker mount a volume there to keep the count across restarts.
-std::string cacheDir() {
-    const char* d = std::getenv("ROUTELENS_CACHE_DIR");
-    return d ? d : "data/cache";
+// Saved traffic snapshot written by preprocess/fetch_traffic.py (override with
+// ROUTELENS_TRAFFIC_FILE). If it is missing the server still works, on free-flow
+// speeds, and says so in /api/traffic/status.
+std::string trafficFile() {
+    const char* f = std::getenv("ROUTELENS_TRAFFIC_FILE");
+    return f ? f : "data/traffic/traffic.csv";
 }
 
 // A click farther than this from any road is rejected.
@@ -256,14 +256,14 @@ bool parseClosures(const crow::json::rvalue& body, std::vector<rl::Closure>& out
 int main() {
     crow::SimpleApp app;
 
-    // Protects /api/routes (and so the TomTom quota behind it) from request
-    // floods: more than 10 requests in one second get HTTP 429.
+    // Protects /api/routes from request floods: more than 10 requests in one
+    // second get HTTP 429.
     constexpr int kRouteRequestsPerWindow = 10;
     constexpr int kRouteWindowSeconds = 1;
     rl::RateLimiter routeLimiter(kRouteRequestsPerWindow, std::chrono::seconds(kRouteWindowSeconds));
     std::atomic<int> rejectedRequests{0};
-    // Route results are cached for 5 minutes (same TTL as the traffic client), so
-    // repeating a query neither recomputes routes nor spends TomTom requests.
+    // Route results are cached for 5 minutes, so repeating a query does not
+    // recompute routes. (Traffic is a fixed snapshot, so cached routes stay valid.)
     rl::RouteCache routeCache(256, 300.0);
 
     // The routing engine plugs in here. Until it exists the server answers 501.
@@ -274,35 +274,6 @@ int main() {
     if (previewEnv != nullptr && std::string(previewEnv) == "1") {
         provider = std::make_unique<rl::PreviewRouteProvider>();
         CROW_LOG_WARNING << "PREVIEW MODE: /api/routes returns SAMPLE routes, not real ones";
-    }
-
-    // TomTom live traffic (client owned by the traffic module). The key is read
-    // only from the environment, goes only into the request URL inside the
-    // client, and is never logged or sent to the browser. Without a key the
-    // client disables itself and the server reports free-flow data.
-    // The routing engine feeds it through rl::updateRouteTraffic().
-    const char* keyEnv = std::getenv("TOMTOM_API_KEY");
-    const bool trafficKeyConfigured = keyEnv != nullptr && keyEnv[0] != '\0';
-    rl::HttpClient http("RouteLens/0.1 (Graphic Era PBL project)", 10);
-    rl::TomTomOptions ttOptions;
-    if (trafficKeyConfigured) {
-        ttOptions.apiKey = keyEnv;
-    }
-    ttOptions.usageFile = cacheDir() + "/tomtom_usage.txt";
-    rl::TomTomClient tomtom(ttOptions, [&http](const std::string& url) { return http.get(url); });
-    std::mutex tomtomMutex;  // TomTomClient is not thread-safe and Crow is multithreaded
-    bool trafficUsable = trafficKeyConfigured;
-    std::string selfTestStatus = "not_run";
-
-    // Opt-in check that the key works: one real request (counts toward the daily
-    // quota). Run with ROUTELENS_TRAFFIC_SELFTEST=1; the result is logged and
-    // shown in /api/traffic/status. Only the status is logged, never the URL.
-    if (std::getenv("ROUTELENS_TRAFFIC_SELFTEST") != nullptr) {
-        const rl::FetchResult r = tomtom.fetch({30.3243, 78.0412});  // Clock Tower
-        selfTestStatus = rl::fetchStatusName(r.status);
-        trafficUsable = rl::hasSegment(r.status) || r.status == rl::FetchStatus::NoCoverage ||
-                        r.status == rl::FetchStatus::CachedNoCoverage;
-        CROW_LOG_INFO << "TomTom self-test: " << selfTestStatus;
     }
 
     // Road network (owned by the map-data module) and the KD-tree that snaps
@@ -343,11 +314,30 @@ int main() {
         }
     }
 
+    // Measured traffic: the saved snapshot (preprocess/fetch_traffic.py), read once
+    // at startup. The server never calls TomTom, so it works offline. A missing or
+    // unreadable file is not fatal: the provider falls back to free-flow speeds and
+    // the status endpoint (and the page) say "estimated".
+    std::string trafficWarning;
+    std::unique_ptr<rl::TrafficProvider> traffic = std::make_unique<rl::FreeFlowProvider>();
+    if (snapper) {
+        traffic = rl::makeTrafficProvider(network, trafficFile(), &trafficWarning);
+        if (trafficWarning.empty()) {
+            CROW_LOG_INFO << "traffic " << traffic->description() << ": " << traffic->edgesWithData()
+                          << " of " << network.stats.keptEdges << " edges have data";
+        } else {
+            CROW_LOG_WARNING << trafficWarning;
+        }
+    }
+    const bool trafficIsSnapshot = traffic->edgesWithData() > 0;
+
     // Connect routing only after the OSM network has loaded. Preview mode
     // (ROUTELENS_PREVIEW=1) keeps its sample provider.
     if (!provider->isPreview() && snapper && network.graph) {
-        // With the junction list, routes count major junctions and wait there.
-        provider = std::make_unique<rl::OsmRouteProvider>(network, junctionsLoaded ? &junctions : nullptr);
+        // With the junction list, routes count major junctions and wait there;
+        // with the snapshot, edges that have data use the measured speed.
+        provider = std::make_unique<rl::OsmRouteProvider>(
+            network, junctionsLoaded ? &junctions : nullptr, traffic.get());
         CROW_LOG_INFO << "OSM routing provider: "
                       << (provider->available() ? "ready" : "unavailable");
     }
@@ -375,21 +365,19 @@ int main() {
     CROW_ROUTE(app, "/api/traffic/status")
     ([&] {
         crow::json::wvalue response;
-        response["source"] = trafficUsable ? "live" : "free_flow_fallback";
-        response["api_key_configured"] = trafficKeyConfigured;
+        // "snapshot": measured speeds saved at fetched_at (not live); the server
+        // makes no TomTom calls. "free_flow_fallback": no usable snapshot, every
+        // speed is an estimate.
+        response["source"] = trafficIsSnapshot ? "snapshot" : "free_flow_fallback";
+        response["description"] = traffic->description();
+        response["fetched_at"] = traffic->fetchedAt();
+        response["edges_with_data"] = traffic->edgesWithData();
+        response["warning"] = trafficWarning;
         // Limit on incoming /api/routes requests.
         response["rate_limit"]["max_requests"] = kRouteRequestsPerWindow;
         response["rate_limit"]["window_seconds"] = kRouteWindowSeconds;
         response["rate_limit"]["current_count"] = routeLimiter.current_count();
         response["rate_limit"]["rejected_total"] = rejectedRequests.load();
-        {
-            std::lock_guard<std::mutex> lock(tomtomMutex);
-            response["tomtom"]["requests_today"] = tomtom.requestsToday();
-            response["tomtom"]["requests_this_run"] = tomtom.requestsThisRun();
-            response["tomtom"]["cache_hits"] = tomtom.cacheHits();
-            response["tomtom"]["daily_cap"] = ttOptions.dailyCap;
-        }
-        response["tomtom"]["self_test"] = selfTestStatus;
         response["route_cache"]["size"] = routeCache.size();
         response["route_cache"]["capacity"] = routeCache.capacity();
         response["route_cache"]["hits"] = routeCache.hits();
