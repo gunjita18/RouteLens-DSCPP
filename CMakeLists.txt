@@ -273,3 +273,11 @@ add_test(NAME TrafficProviderTests COMMAND test_traffic_provider)
 add_executable(routelens_lookup_benchmark src/app/lookup_benchmark.c)
 target_link_libraries(routelens_lookup_benchmark PRIVATE routelens_ds)
 target_compile_options(routelens_lookup_benchmark PRIVATE -O2 -Wall -Wextra -pedantic)
+
+# ---------------------------------------------------------------- ETA study script
+# Offline unit tests for evaluation/eta_study.py (no server, no network).
+if(Python3_Interpreter_FOUND)
+    add_test(NAME eta_study_test
+             COMMAND ${Python3_EXECUTABLE} evaluation/test_eta_study.py
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
